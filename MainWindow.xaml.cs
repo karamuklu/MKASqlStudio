@@ -27,6 +27,8 @@ public partial class MainWindow
     private TabItem? activeQueryTab;
     private int queryNumber = 1;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
+    private DataView? resultView;
+    private readonly Dictionary<string, string> resultFilters = new(StringComparer.OrdinalIgnoreCase);
     private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
     private sealed record CompletionItem(string Display, string InsertText);
     private sealed record ExplorerNode(string Kind, string Schema = "", string Name = "");
@@ -213,8 +215,6 @@ public partial class MainWindow
     {
         if (Keyboard.Modifiers == ModifierKeys.Shift && e.Key == Key.D9) { InsertPair("()"); e.Handled = true; return; }
         if (e.Key == Key.OemOpenBrackets) { InsertPair("[]"); e.Handled = true; return; }
-        if (e.Key == Key.OemQuotes) { InsertPair("''"); e.Handled = true; return; }
-
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
             ShowIntelliSense(true);
@@ -365,7 +365,9 @@ public partial class MainWindow
             await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
             var table = new DataTable();
             table.Load(reader);
-            ResultsGrid.ItemsSource = table.DefaultView;
+            resultView = table.DefaultView;
+            resultFilters.Clear();
+            ResultsGrid.ItemsSource = resultView;
             stopwatch.Stop();
             TimingText.Text = $"{table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms";
             MessagesBox.Text = "Sorgu başarıyla tamamlandı.";
@@ -376,6 +378,46 @@ public partial class MainWindow
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => queryCancellation?.Cancel();
+
+    private void ResultsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
+    {
+        var columnName = e.PropertyName;
+        var header = new FrameworkElementFactory(typeof(StackPanel));
+        header.SetValue(StackPanel.OrientationProperty, Orientation.Vertical);
+        header.SetValue(StackPanel.MarginProperty, new Thickness(0, 2, 0, 2));
+
+        var title = new FrameworkElementFactory(typeof(TextBlock));
+        title.SetValue(TextBlock.TextProperty, columnName);
+        title.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
+        header.AppendChild(title);
+
+        var filter = new FrameworkElementFactory(typeof(TextBox));
+        filter.SetValue(TextBox.TagProperty, columnName);
+        filter.SetValue(TextBox.MarginProperty, new Thickness(0, 4, 0, 0));
+        filter.SetValue(TextBox.PaddingProperty, new Thickness(5, 2, 5, 2));
+        filter.SetValue(TextBox.ToolTipProperty, $"{columnName} içinde filtrele");
+        filter.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler(ResultColumnFilter_TextChanged));
+        header.AppendChild(filter);
+
+        e.Column.HeaderTemplate = new DataTemplate { VisualTree = header };
+    }
+
+    private void ResultColumnFilter_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (sender is not TextBox filter || filter.Tag is not string columnName || resultView is null) return;
+        var value = filter.Text.Trim();
+        if (value.Length == 0) resultFilters.Remove(columnName); else resultFilters[columnName] = value;
+        try
+        {
+            resultView.RowFilter = string.Join(" AND ", resultFilters.Select(item =>
+                $"CONVERT([{item.Key.Replace("]", "]]", StringComparison.Ordinal)}], 'System.String') LIKE '%{item.Value.Replace("'", "''", StringComparison.Ordinal)}%'"));
+        }
+        catch (EvaluateException)
+        {
+            resultView.RowFilter = "";
+        }
+    }
+
     private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
     private async void RefreshSchema_Click(object sender, RoutedEventArgs e) { try { await LoadSchemaAsync(); StatusText.Text = "Şema yenilendi"; } catch (Exception ex) { ShowError("Şema yüklenemedi", ex); } }
     private void NewQuery_Click(object sender, RoutedEventArgs e)
