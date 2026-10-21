@@ -1,0 +1,9 @@
+<Application x:Class="WindowsMssqlStudio.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <SolidColorBrush x:Key="AccentBrush" Color="#3869D6" />
+    <SolidColorBrush x:Key="PanelBrush" Color="#F4F6FA" />
+  </Application.Resources>
+</Application>
