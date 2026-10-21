@@ -43,9 +43,14 @@ public partial class MainWindow
     {
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
+        SchemaTree.AddHandler(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(SchemaTree_ContextMenuOpening));
+        SchemaTree.MouseDoubleClick += SchemaTree_MouseDoubleClick;
         IntelliSensePopup.PlacementTarget = SqlEditor;
         VersionText.Text = $"v{AppVersion} · SQL Server çalışma alanı";
         FooterVersionText.Text = $"MKA SQL Studio · Windows · v{AppVersion}";
+        ResultsGrid.RowHeight = 28;
+        ResultsGrid.EnableRowVirtualization = true;
+        ResultsGrid.EnableColumnVirtualization = true;
         syntaxHighlightTimer.Tick += SyntaxHighlightTimer_Tick;
         Loaded += MainWindow_Loaded;
     }
@@ -53,6 +58,8 @@ public partial class MainWindow
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
+        foreach (var button in FindVisualChildren<Button>(this))
+            if (string.Equals(button.Content?.ToString(), "Güncelle", StringComparison.Ordinal)) button.Content = $"v{AppVersion}  Güncelle";
         Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
         {
             SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
@@ -254,6 +261,101 @@ public partial class MainWindow
     private async Task AddDefinitionAsync(TreeViewItem parent, ExplorerNode node)
     {
         await using var command = new SqlCommand("SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@schema)+'.'+QUOTENAME(@name)))", connection); command.Parameters.AddWithValue("@schema", node.Schema); command.Parameters.AddWithValue("@name", node.Name); var value = await command.ExecuteScalarAsync(); parent.Items.Add(new TreeViewItem { Header = value is null ? "Tanım okunamadı" : "Tanım hazır (çift tıklayıp sorguya ekleyebilirsin)" });
+    }
+
+    private void SchemaTree_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        var item = FindParent<TreeViewItem>(source);
+        if (item is null || item.Tag is not ExplorerNode node) { e.Handled = true; return; }
+        item.IsSelected = true;
+        var menu = new ContextMenu();
+        if (node.Kind is "Table" or "View" or "Procedure" or "Function")
+        {
+            menu.Items.Add(CreateContextMenuItem("Aç", async (_, _) => await OpenObjectAsync(node)));
+            if (node.Kind is "Table" or "View") menu.Items.Add(CreateContextMenuItem("İlk 1000 satırı seç", async (_, _) => await OpenSelectQueryAsync(node)));
+            if (node.Kind is "Procedure" or "Function") menu.Items.Add(CreateContextMenuItem("Tanımı düzenle", async (_, _) => await OpenDefinitionQueryAsync(node)));
+            menu.Items.Add(new Separator());
+        }
+        menu.Items.Add(CreateContextMenuItem("Adı kopyala", (_, _) => Clipboard.SetText($"[{node.Schema}].[{node.Name}]")));
+        menu.Items.Add(CreateContextMenuItem("Şemayı yenile", async (_, _) => await RefreshSchemaFromContextAsync()));
+        item.ContextMenu = menu;
+    }
+
+    private void SchemaTree_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        var item = FindParent<TreeViewItem>(source);
+        if (item?.Tag is ExplorerNode node && node.Kind is "Table" or "View" or "Procedure" or "Function")
+        {
+            _ = OpenObjectAsync(node);
+            e.Handled = true;
+        }
+    }
+
+    private static MenuItem CreateContextMenuItem(string header, RoutedEventHandler handler)
+    {
+        var item = new MenuItem { Header = header, Padding = new Thickness(10, 6, 24, 6) };
+        item.Click += handler;
+        return item;
+    }
+
+    private async Task OpenObjectAsync(ExplorerNode node)
+    {
+        if (node.Kind is "Procedure" or "Function") await OpenDefinitionQueryAsync(node);
+        else await OpenSelectQueryAsync(node);
+    }
+
+    private async Task OpenSelectQueryAsync(ExplorerNode node)
+    {
+        var sql = $"SELECT TOP (1000) *\nFROM [{node.Schema}].[{node.Name}];";
+        AddQueryTab($"{node.Name}.sql", sql);
+    }
+
+    private async Task OpenDefinitionQueryAsync(ExplorerNode node)
+    {
+        if (connection is null) return;
+        await using var command = new SqlCommand("SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@schema)+'.'+QUOTENAME(@name)))", connection);
+        command.Parameters.AddWithValue("@schema", node.Schema);
+        command.Parameters.AddWithValue("@name", node.Name);
+        var definition = await command.ExecuteScalarAsync() as string;
+        AddQueryTab($"{node.Name}.sql", definition ?? $"-- [{node.Schema}].[{node.Name}] tanımı okunamadı");
+    }
+
+    private void AddQueryTab(string name, string text)
+    {
+        SaveActiveQuery();
+        queryNumber++;
+        var tab = new TabItem { Tag = text };
+        SetTabHeader(tab, name);
+        QueryTabs.Items.Add(tab);
+        QueryTabs.SelectedItem = tab;
+    }
+
+    private async Task RefreshSchemaFromContextAsync()
+    {
+        await LoadSchemaAsync();
+        StatusText.Text = "Şema yenilendi";
+    }
+
+    private static T? FindParent<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T result) return result;
+            current = current is Visual visual ? VisualTreeHelper.GetParent(visual) : LogicalTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualChildren<T>(child)) yield return descendant;
+        }
     }
 
     private void ExplorerFilter_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
