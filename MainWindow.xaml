@@ -33,7 +33,7 @@
         <MenuItem Header="Durdur" Click="Cancel_Click" />
       </MenuItem>
       <MenuItem Header="Yardım">
-        <MenuItem Header="Güncellemeleri kontrol et" Click="CheckForUpdates_Click" />
+        <MenuItem Header="Güncelle" Click="CheckForUpdates_Click" />
         <MenuItem Header="Hakkında" Click="About_Click" />
       </MenuItem>
     </Menu>
@@ -45,7 +45,7 @@
       <Button Content="Bağlan" Click="Connect_Click" />
       <Button Content="Bağlantıyı kes" Click="Disconnect_Click" />
       <Button Content="Şemayı yenile" Click="RefreshSchema_Click" />
-      <Button Content="Güncellemeleri kontrol et" Click="CheckForUpdates_Click" />
+      <Button Content="Güncelle" Click="CheckForUpdates_Click" Background="#E7F0FF" />
       <Separator />
       <Button Content="▶ Çalıştır" Click="Execute_Click" Background="#DFF1E5" />
       <Button Content="■ Durdur" Click="Cancel_Click" />
@@ -65,7 +65,7 @@
       <Border Grid.Column="0" Background="#FFFFFF" BorderBrush="#C7CBD1" BorderThickness="0,0,1,0">
         <DockPanel>
           <Border DockPanel.Dock="Top" Background="#E8EAED" BorderBrush="#D2D6DB" BorderThickness="0,0,0,1" Padding="10,8">
-            <DockPanel><TextBlock Text="Object Explorer" FontWeight="SemiBold" /><Button DockPanel.Dock="Right" Content="⟳" ToolTip="Yenile" Click="RefreshSchema_Click" Padding="7,2" /></DockPanel>
+            <DockPanel><StackPanel Orientation="Horizontal"><TextBlock Text="Object Explorer" FontWeight="SemiBold" /><TextBlock Text="  ·  Database" Foreground="#6B7280" Margin="5,0,0,0" /></StackPanel><Button DockPanel.Dock="Right" Content="⟳" ToolTip="Yenile" Click="RefreshSchema_Click" Padding="7,2" /></DockPanel>
           </Border>
           <Border DockPanel.Dock="Top" Background="#F7F8FA" Padding="10,8" BorderBrush="#E0E3E7" BorderThickness="0,0,0,1">
             <TextBlock x:Name="ConnectionLabel" Text="Bağlantı yok" Foreground="#52606D" TextWrapping="Wrap" />

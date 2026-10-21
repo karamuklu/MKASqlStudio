@@ -1,5 +1,7 @@
 using System.Data;
 using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -173,9 +175,23 @@ public partial class MainWindow
             if (!response.IsSuccessStatusCode) { MessageBox.Show(this, "Henüz yayınlanmış bir sürüm bulunamadı. Güncellemeler GitHub Releases üzerinden yayınlanacak.", "Güncelleme"); return; }
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             var tag = document.RootElement.GetProperty("tag_name").GetString() ?? "";
-            var url = document.RootElement.GetProperty("html_url").GetString() ?? "https://github.com/karamuklu/MKASqlStudio/releases";
-            MessageBox.Show(this, $"Yeni yayın bulundu: {tag}\nGitHub Releases sayfası açılacak.", "Güncelleme");
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            var asset = document.RootElement.GetProperty("assets").EnumerateArray().FirstOrDefault(item => item.GetProperty("name").GetString()?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true);
+            if (asset.ValueKind == JsonValueKind.Undefined) { MessageBox.Show(this, "Release bulundu fakat indirilebilir ZIP paketi yok.", "Güncelleme"); return; }
+            var downloadUrl = asset.GetProperty("browser_download_url").GetString()!;
+            var tempRoot = Path.Combine(Path.GetTempPath(), "MkaSqlStudioUpdate");
+            Directory.CreateDirectory(tempRoot);
+            var zipPath = Path.Combine(tempRoot, "update.zip");
+            var extractPath = Path.Combine(tempRoot, "files");
+            if (Directory.Exists(extractPath)) Directory.Delete(extractPath, true);
+            await File.WriteAllBytesAsync(zipPath, await client.GetByteArrayAsync(downloadUrl));
+            ZipFile.ExtractToDirectory(zipPath, extractPath);
+            var installPath = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+            var scriptPath = Path.Combine(tempRoot, "apply-update.ps1");
+            var script = $"Start-Sleep -Seconds 2\nCopy-Item -LiteralPath '{extractPath.Replace("'", "''")}\\*' -Destination '{installPath.Replace("'", "''")}' -Recurse -Force\nStart-Process -FilePath '{Path.Combine(installPath, "WindowsMssqlStudio.exe").Replace("'", "''")}'\n";
+            await File.WriteAllTextAsync(scriptPath, script);
+            MessageBox.Show(this, $"{tag} güncellemesi indirildi. Uygulama kapanıp yeniden başlatılacak.", "Güncelleme");
+            Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\")") { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            Close();
         }
         catch (Exception ex) { ShowError("Güncelleme kontrolü başarısız", ex); }
     }
