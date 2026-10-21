@@ -6,6 +6,7 @@ namespace WindowsMssqlStudio;
 public partial class ConnectionDialog
 {
     public string ConnectionString { get; private set; } = "";
+    public string? SelectedDatabase { get; private set; }
     private SqlConnectionStringBuilder? serverBuilder;
     public ConnectionProfile? SelectedProfile { get; private set; }
     public ConnectionDialog()
@@ -38,6 +39,7 @@ public partial class ConnectionDialog
             await using var command = new SqlCommand("SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' ORDER BY name", serverConnection);
             await using var reader = await command.ExecuteReaderAsync();
             DatabaseBox.Items.Clear();
+            DatabaseBox.Items.Add("(Sunucu genelinde)");
             while (await reader.ReadAsync()) DatabaseBox.Items.Add(reader.GetString(0));
             if (DatabaseBox.Items.Count > 0) DatabaseBox.SelectedIndex = 0;
             DatabaseBox.IsEnabled = DatabaseBox.Items.Count > 0;
@@ -49,9 +51,10 @@ public partial class ConnectionDialog
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
         if (DatabaseBox.SelectedItem is null) { MessageBox.Show(this, "Önce sunucuya bağlanıp bir veritabanı seçin.", "Veritabanı gerekli"); return; }
-        var database = DatabaseBox.SelectedItem.ToString()!;
-        ConnectionString = BuildBuilder(database).ConnectionString;
-        SelectedProfile = new ConnectionProfile { Server = ServerBox.Text.Trim(), Database = database, WindowsAuthentication = AuthBox.SelectedIndex == 0, UserName = UserBox.Text.Trim(), Password = PasswordBox.Password };
+        var selected = DatabaseBox.SelectedItem.ToString()!;
+        SelectedDatabase = selected == "(Sunucu genelinde)" ? null : selected;
+        ConnectionString = BuildBuilder(SelectedDatabase ?? "master").ConnectionString;
+        SelectedProfile = new ConnectionProfile { Server = ServerBox.Text.Trim(), Database = SelectedDatabase ?? "(Sunucu genelinde)", WindowsAuthentication = AuthBox.SelectedIndex == 0, UserName = UserBox.Text.Trim(), Password = PasswordBox.Password };
         DialogResult = true;
     }
 

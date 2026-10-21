@@ -21,12 +21,16 @@ namespace WindowsMssqlStudio;
 public partial class MainWindow
 {
     private SqlConnection? connection;
+    private string? serverConnectionString;
+    private bool changingDatabase;
     private CancellationTokenSource? queryCancellation;
     private bool suppressEditorChanges;
     private readonly DispatcherTimer syntaxHighlightTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private TabItem? activeQueryTab;
     private int queryNumber = 1;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> tableNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<string>> tableColumns = new(StringComparer.OrdinalIgnoreCase);
     private DataView? resultView;
     private readonly Dictionary<string, string> resultFilters = new(StringComparer.OrdinalIgnoreCase);
     private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
@@ -49,7 +53,7 @@ public partial class MainWindow
         {
             SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
             activeQueryTab = QueryTabs.SelectedItem as TabItem;
-            if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
+            if (activeQueryTab is not null) { activeQueryTab.Tag = GetEditorText(); SetTabHeader(activeQueryTab, "SQLQuery1.sql"); }
             SqlEditor.Focus();
         });
     }
@@ -64,12 +68,15 @@ public partial class MainWindow
             connection?.Dispose();
             connection = new SqlConnection(dialog.ConnectionString);
             await connection.OpenAsync();
+            var serverBuilder = new SqlConnectionStringBuilder(dialog.ConnectionString) { InitialCatalog = "master" };
+            serverConnectionString = serverBuilder.ConnectionString;
             if (dialog.SelectedProfile is not null) ConnectionProfileStore.Save(dialog.SelectedProfile);
-            ConnectionLabel.Text = connection.DataSource + (string.IsNullOrWhiteSpace(connection.Database) ? "" : $"\n{connection.Database}");
-            TopConnectionText.Text = $"  {connection.DataSource} · {connection.Database}";
+            await LoadDatabaseSelectorAsync(dialog.SelectedDatabase);
+            ConnectionLabel.Text = connection.DataSource + $"\n{(dialog.SelectedDatabase ?? "Sunucu")}";
+            TopConnectionText.Text = $"  {connection.DataSource} · {(dialog.SelectedDatabase ?? "Sunucu")}";
             StatusText.Text = "Bağlandı";
             MessagesBox.Text = "Bağlantı başarılı.";
-            await LoadSchemaAsync();
+            if (dialog.SelectedDatabase is not null) await LoadSchemaAsync();
         }
         catch (Exception ex)
         {
@@ -84,7 +91,10 @@ public partial class MainWindow
         if (connection is null) return;
         SchemaTree.Items.Clear();
         completionSymbols.Clear();
+        tableNames.Clear();
+        tableColumns.Clear();
         completionSymbols.Add(connection.Database);
+        await LoadTableColumnsAsync();
         var database = new TreeViewItem { Header = $"{connection.Database}  (Database)", Tag = new ExplorerNode("Database"), IsExpanded = true };
         AddExpandable(database, "Tables", "Tables");
         AddExpandable(database, "Views", "Views");
@@ -95,6 +105,68 @@ public partial class MainWindow
         AddExpandable(database, "Synonyms", "Synonyms");
         AddExpandable(database, "Security", "Security");
         SchemaTree.Items.Add(database);
+    }
+
+    private async Task LoadDatabaseSelectorAsync(string? selectedDatabase)
+    {
+        if (connection is null) return;
+        changingDatabase = true;
+        try
+        {
+            DatabaseSelector.Items.Clear();
+            await using var command = new SqlCommand("SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' ORDER BY name", connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) DatabaseSelector.Items.Add(reader.GetString(0));
+            DatabaseSelector.IsEnabled = DatabaseSelector.Items.Count > 0;
+            if (selectedDatabase is not null) DatabaseSelector.SelectedItem = selectedDatabase;
+            else if (DatabaseSelector.Items.Count > 0) DatabaseSelector.SelectedIndex = 0;
+        }
+        finally { changingDatabase = false; }
+        if (selectedDatabase is null && DatabaseSelector.SelectedItem is string database) await SwitchDatabaseAsync(database);
+    }
+
+    private async void DatabaseSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (changingDatabase || DatabaseSelector.SelectedItem is not string database || string.IsNullOrWhiteSpace(serverConnectionString)) return;
+        await SwitchDatabaseAsync(database);
+    }
+
+    private async Task SwitchDatabaseAsync(string database)
+    {
+        if (string.IsNullOrWhiteSpace(serverConnectionString)) return;
+        try
+        {
+            changingDatabase = true;
+            var builder = new SqlConnectionStringBuilder(serverConnectionString) { InitialCatalog = database };
+            connection?.Dispose();
+            connection = new SqlConnection(builder.ConnectionString);
+            await connection.OpenAsync();
+            ConnectionLabel.Text = connection.DataSource + $"\n{database}";
+            TopConnectionText.Text = $"  {connection.DataSource} · {database}";
+            await LoadSchemaAsync();
+            StatusText.Text = "Veritabanı seçildi";
+        }
+        catch (Exception ex) { ShowError("Veritabanına geçilemedi", ex); }
+        finally { changingDatabase = false; }
+    }
+
+    private async Task LoadTableColumnsAsync()
+    {
+        if (connection is null) return;
+        await using var command = new SqlCommand("SELECT s.name, o.name, c.name FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.is_ms_shipped=0 ORDER BY s.name,o.name,c.column_id", connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var schema = reader.GetString(0);
+            var table = reader.GetString(1);
+            var column = reader.GetString(2);
+            tableColumns.TryAdd(table, []);
+            tableColumns.TryAdd($"{schema}.{table}", []);
+            tableColumns[table].Add(column);
+            tableColumns[$"{schema}.{table}"].Add(column);
+            completionSymbols.Add(column);
+            tableNames.Add(table);
+        }
     }
 
     private static TreeViewItem AddExpandable(TreeViewItem parent, string header, string kind, string schema = "", string name = "")
@@ -148,6 +220,7 @@ public partial class MainWindow
         {
             completionSymbols.Add(reader.GetString(0));
             completionSymbols.Add(reader.GetString(1));
+            if (type == "U") tableNames.Add(reader.GetString(1));
             AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), kind, reader.GetString(0), reader.GetString(1));
         }
     }
@@ -234,18 +307,24 @@ public partial class MainWindow
         var editorText = GetEditorText();
         var caretIndex = GetCaretOffset();
         var beforeCaret = editorText[..Math.Min(caretIndex, editorText.Length)];
+        var qualifiedMatch = Regex.Match(beforeCaret, @"(?<qualifier>[A-Za-z_]\w*)\.(?<token>[A-Za-z_]\w*)$", RegexOptions.IgnoreCase);
+        var qualifier = qualifiedMatch.Success ? qualifiedMatch.Groups["qualifier"].Value : "";
         var start = beforeCaret.Length - 1;
         while (start >= 0 && (char.IsLetterOrDigit(beforeCaret[start]) || beforeCaret[start] is '_' or '#' or '@')) start--;
-        var token = beforeCaret[(start + 1)..];
+        var token = qualifiedMatch.Success ? qualifiedMatch.Groups["token"].Value : beforeCaret[(start + 1)..];
         if (!force && token.Length < 2) { IntelliSensePopup.IsOpen = false; return; }
 
-        var candidates = sqlKeywords.Concat(completionSymbols)
+        var aliases = GetTableAliases(beforeCaret);
+        var qualifiedTable = aliases.TryGetValue(qualifier, out var aliasTable) ? aliasTable : "";
+        var candidateSource = !string.IsNullOrWhiteSpace(qualifiedTable) && tableColumns.TryGetValue(qualifiedTable, out var columns) ? columns : sqlKeywords.Concat(completionSymbols);
+        var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+[A-Za-z_]*$", RegexOptions.IgnoreCase);
+        var candidates = candidateSource
             .Where(value => force || value.StartsWith(token, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(value => value.StartsWith(token, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .ThenBy(value => value)
             .Take(30)
-            .Select(value => new CompletionItem(value, value))
+            .Select(value => new CompletionItem(value, tableContext && tableNames.Contains(value) ? $"{value} {value[..1].ToLowerInvariant()}" : value))
             .ToList();
         IntelliSenseList.ItemsSource = candidates;
         IntelliSenseList.SelectedIndex = candidates.Count == 0 ? -1 : 0;
@@ -257,6 +336,20 @@ public partial class MainWindow
             IntelliSensePopup.VerticalOffset = Math.Max(0, caretRect.Bottom);
         }
         IntelliSensePopup.IsOpen = candidates.Count > 0;
+    }
+
+    private Dictionary<string, string> GetTableAliases(string text)
+    {
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match match in Regex.Matches(text, @"\b(?:FROM|JOIN)\s+(?:(?<schema>[A-Za-z_]\w*)\.)?(?<table>[A-Za-z_]\w*)(?:\s+(?:AS\s+)?(?<alias>[A-Za-z_]\w*))?", RegexOptions.IgnoreCase))
+        {
+            var table = match.Groups["table"].Value;
+            var schema = match.Groups["schema"].Value;
+            var alias = match.Groups["alias"].Value;
+            if (string.IsNullOrWhiteSpace(alias) || sqlKeywords.Contains(alias, StringComparer.OrdinalIgnoreCase)) alias = table[..1].ToLowerInvariant();
+            aliases[alias] = string.IsNullOrWhiteSpace(schema) ? table : $"{schema}.{table}";
+        }
+        return aliases;
     }
 
     private void MoveCompletion(int offset)
@@ -418,15 +511,41 @@ public partial class MainWindow
         }
     }
 
-    private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
+    private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; serverConnectionString = null; DatabaseSelector.Items.Clear(); DatabaseSelector.IsEnabled = false; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
     private async void RefreshSchema_Click(object sender, RoutedEventArgs e) { try { await LoadSchemaAsync(); StatusText.Text = "Şema yenilendi"; } catch (Exception ex) { ShowError("Şema yüklenemedi", ex); } }
     private void NewQuery_Click(object sender, RoutedEventArgs e)
     {
         SaveActiveQuery();
         queryNumber++;
-        var tab = new TabItem { Header = $"●  SQLQuery{queryNumber}.sql", Tag = "" };
+        var tab = new TabItem { Tag = "" };
+        SetTabHeader(tab, $"SQLQuery{queryNumber}.sql");
         QueryTabs.Items.Add(tab);
         QueryTabs.SelectedItem = tab;
+    }
+
+    private void SetTabHeader(TabItem tab, string name)
+    {
+        var header = new StackPanel { Orientation = Orientation.Horizontal };
+        header.Children.Add(new TextBlock { Text = $"●  {name}", VerticalAlignment = VerticalAlignment.Center });
+        var close = new Button { Content = "×", Tag = tab, Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Sorgu sekmesini kapat" };
+        close.Click += CloseQueryTab_Click;
+        header.Children.Add(close);
+        tab.Header = header;
+    }
+
+    private void CloseQueryTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: TabItem tab }) return;
+        if (QueryTabs.Items.Count == 1)
+        {
+            SetEditorText("");
+            return;
+        }
+        if (tab == activeQueryTab) SaveActiveQuery();
+        var index = QueryTabs.Items.IndexOf(tab);
+        QueryTabs.Items.Remove(tab);
+        QueryTabs.SelectedIndex = Math.Max(0, Math.Min(index, QueryTabs.Items.Count - 1));
+        e.Handled = true;
     }
 
     private void QueryTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
