@@ -32,6 +32,10 @@
         <MenuItem Header="Çalıştır (F5)" Click="Execute_Click" />
         <MenuItem Header="Durdur" Click="Cancel_Click" />
       </MenuItem>
+      <MenuItem Header="Yardım">
+        <MenuItem Header="Güncellemeleri kontrol et" Click="CheckForUpdates_Click" />
+        <MenuItem Header="Hakkında" Click="About_Click" />
+      </MenuItem>
     </Menu>
     <ToolBar DockPanel.Dock="Top" Background="#E8EAED">
       <Button Content="Yeni sorgu" Click="NewQuery_Click" />
@@ -41,6 +45,7 @@
       <Button Content="Bağlan" Click="Connect_Click" />
       <Button Content="Bağlantıyı kes" Click="Disconnect_Click" />
       <Button Content="Şemayı yenile" Click="RefreshSchema_Click" />
+      <Button Content="Güncellemeleri kontrol et" Click="CheckForUpdates_Click" />
       <Separator />
       <Button Content="▶ Çalıştır" Click="Execute_Click" Background="#DFF1E5" />
       <Button Content="■ Durdur" Click="Cancel_Click" />
@@ -65,6 +70,7 @@
           <Border DockPanel.Dock="Top" Background="#F7F8FA" Padding="10,8" BorderBrush="#E0E3E7" BorderThickness="0,0,0,1">
             <TextBlock x:Name="ConnectionLabel" Text="Bağlantı yok" Foreground="#52606D" TextWrapping="Wrap" />
           </Border>
+          <TextBox x:Name="ExplorerFilter" DockPanel.Dock="Top" Margin="8,8,8,4" Padding="8,5" ToolTip="Nesnelerde ara" TextChanged="ExplorerFilter_TextChanged" />
           <TreeView x:Name="SchemaTree" Margin="8,0,8,8" />
         </DockPanel>
       </Border>
