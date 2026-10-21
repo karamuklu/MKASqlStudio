@@ -1,5 +1,6 @@
 using System.Data;
 using System.Diagnostics;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -16,6 +17,10 @@ public partial class MainWindow
 {
     private SqlConnection? connection;
     private CancellationTokenSource? queryCancellation;
+    private bool suppressIntelliSense;
+    private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
+    private sealed record CompletionItem(string Display, string InsertText);
     private sealed record ExplorerNode(string Kind, string Schema = "", string Name = "");
 
     public MainWindow()
@@ -53,6 +58,8 @@ public partial class MainWindow
     {
         if (connection is null) return;
         SchemaTree.Items.Clear();
+        completionSymbols.Clear();
+        completionSymbols.Add(connection.Database);
         var database = new TreeViewItem { Header = $"{connection.Database}  (Database)", Tag = new ExplorerNode("Database"), IsExpanded = true };
         AddExpandable(database, "Tables", "Tables");
         AddExpandable(database, "Views", "Views");
@@ -112,13 +119,24 @@ public partial class MainWindow
     {
         await using var command = new SqlCommand("SELECT s.name, o.name FROM sys.objects o JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.is_ms_shipped=0 AND o.type=@type ORDER BY s.name,o.name", connection);
         command.Parameters.AddWithValue("@type", type); await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync()) AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), kind, reader.GetString(0), reader.GetString(1));
+        while (await reader.ReadAsync())
+        {
+            completionSymbols.Add(reader.GetString(0));
+            completionSymbols.Add(reader.GetString(1));
+            AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), kind, reader.GetString(0), reader.GetString(1));
+        }
     }
 
     private async Task AddFunctionsAsync(TreeViewItem parent)
     {
         await using var command = new SqlCommand("SELECT s.name, o.name FROM sys.objects o JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.is_ms_shipped=0 AND o.type IN ('FN','IF','TF','FS','FT') ORDER BY s.name,o.name", connection);
-        await using var reader = await command.ExecuteReaderAsync(); while (await reader.ReadAsync()) AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), "Function", reader.GetString(0), reader.GetString(1));
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            completionSymbols.Add(reader.GetString(0));
+            completionSymbols.Add(reader.GetString(1));
+            AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), "Function", reader.GetString(0), reader.GetString(1));
+        }
     }
 
     private async Task AddRowsAsync(TreeViewItem parent, string sql, ExplorerNode node)
@@ -132,7 +150,85 @@ public partial class MainWindow
         await using var command = new SqlCommand("SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@schema)+'.'+QUOTENAME(@name)))", connection); command.Parameters.AddWithValue("@schema", node.Schema); command.Parameters.AddWithValue("@name", node.Name); var value = await command.ExecuteScalarAsync(); parent.Items.Add(new TreeViewItem { Header = value is null ? "Tanım okunamadı" : "Tanım hazır (çift tıklayıp sorguya ekleyebilirsin)" });
     }
 
-    private void ExplorerFilter_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e) { }
+    private void ExplorerFilter_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        var filter = ExplorerFilter.Text.Trim();
+        foreach (var item in FindTreeItems(SchemaTree.Items))
+            item.Visibility = string.IsNullOrWhiteSpace(filter) || item.Header?.ToString()?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static IEnumerable<TreeViewItem> FindTreeItems(ItemCollection items)
+    {
+        foreach (TreeViewItem item in items)
+        {
+            yield return item;
+            foreach (var child in FindTreeItems(item.Items)) yield return child;
+        }
+    }
+
+    private void SqlEditor_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, SqlEditor.LineCount)));
+        if (!suppressIntelliSense) ShowIntelliSense(false);
+    }
+
+    private void SqlEditor_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            ShowIntelliSense(true);
+            e.Handled = true;
+            return;
+        }
+
+        if (!IntelliSensePopup.IsOpen) return;
+        if (e.Key == Key.Escape) { IntelliSensePopup.IsOpen = false; e.Handled = true; }
+        else if (e.Key == Key.Down) { MoveCompletion(1); e.Handled = true; }
+        else if (e.Key == Key.Up) { MoveCompletion(-1); e.Handled = true; }
+        else if (e.Key is Key.Enter or Key.Tab) { InsertSelectedCompletion(); e.Handled = true; }
+    }
+
+    private void ShowIntelliSense(bool force)
+    {
+        var beforeCaret = SqlEditor.Text[..Math.Min(SqlEditor.CaretIndex, SqlEditor.Text.Length)];
+        var start = beforeCaret.Length - 1;
+        while (start >= 0 && (char.IsLetterOrDigit(beforeCaret[start]) || beforeCaret[start] is '_' or '#' or '@')) start--;
+        var token = beforeCaret[(start + 1)..];
+        if (!force && token.Length < 2) { IntelliSensePopup.IsOpen = false; return; }
+
+        var candidates = sqlKeywords.Concat(completionSymbols)
+            .Where(value => force || value.StartsWith(token, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value.StartsWith(token, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(value => value)
+            .Take(30)
+            .Select(value => new CompletionItem(value, value))
+            .ToList();
+        IntelliSenseList.ItemsSource = candidates;
+        IntelliSenseList.SelectedIndex = candidates.Count == 0 ? -1 : 0;
+        IntelliSensePopup.IsOpen = candidates.Count > 0;
+    }
+
+    private void MoveCompletion(int offset)
+    {
+        if (IntelliSenseList.Items.Count == 0) return;
+        var next = Math.Clamp(IntelliSenseList.SelectedIndex + offset, 0, IntelliSenseList.Items.Count - 1);
+        IntelliSenseList.SelectedIndex = next;
+    }
+
+    private void InsertSelectedCompletion()
+    {
+        if (IntelliSenseList.SelectedItem is not CompletionItem selected) return;
+        var caret = SqlEditor.CaretIndex;
+        var start = caret - 1;
+        while (start >= 0 && (char.IsLetterOrDigit(SqlEditor.Text[start]) || SqlEditor.Text[start] is '_' or '#' or '@')) start--;
+        suppressIntelliSense = true;
+        SqlEditor.Select(start + 1, caret - start - 1);
+        SqlEditor.SelectedText = selected.InsertText;
+        SqlEditor.CaretIndex = start + 1 + selected.InsertText.Length;
+        suppressIntelliSense = false;
+        IntelliSensePopup.IsOpen = false;
+    }
 
     private async void Execute_Click(object sender, RoutedEventArgs e)
     {
