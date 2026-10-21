@@ -175,7 +175,7 @@ public partial class MainWindow
             if (!response.IsSuccessStatusCode) { MessageBox.Show(this, "Henüz yayınlanmış bir sürüm bulunamadı. Güncellemeler GitHub Releases üzerinden yayınlanacak.", "Güncelleme"); return; }
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             var tag = document.RootElement.GetProperty("tag_name").GetString() ?? "";
-            var asset = document.RootElement.GetProperty("assets").EnumerateArray().FirstOrDefault(item => item.GetProperty("name").GetString()?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true);
+            var asset = document.RootElement.GetProperty("assets").EnumerateArray().FirstOrDefault(item => string.Equals(item.GetProperty("name").GetString(), "WindowsMssqlStudio-release.zip", StringComparison.OrdinalIgnoreCase));
             if (asset.ValueKind == JsonValueKind.Undefined) { MessageBox.Show(this, "Release bulundu fakat indirilebilir ZIP paketi yok.", "Güncelleme"); return; }
             var downloadUrl = asset.GetProperty("browser_download_url").GetString()!;
             var tempRoot = Path.Combine(Path.GetTempPath(), "MkaSqlStudioUpdate");
