@@ -14,11 +14,12 @@ public partial class MainWindow
 {
     private SqlConnection? connection;
     private CancellationTokenSource? queryCancellation;
-    private readonly List<(string Group, string Header)> schemaItems = new();
+    private sealed record ExplorerNode(string Kind, string Schema = "", string Name = "");
 
     public MainWindow()
     {
         InitializeComponent();
+        SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
         SqlEditor.Focus();
     }
 
@@ -49,50 +50,87 @@ public partial class MainWindow
     private async Task LoadSchemaAsync()
     {
         if (connection is null) return;
-        schemaItems.Clear();
-        await using var command = new SqlCommand(@"SELECT s.name, o.name, o.type_desc
-            FROM sys.objects o
-            INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
-            WHERE o.is_ms_shipped = 0
-              AND o.type IN ('U','V','P','PC','FN','IF','TF','TR','SN','FS','FT')
-            ORDER BY o.type_desc, s.name, o.name", connection);
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            schemaItems.Add((MapObjectGroup(reader.GetString(2)), $"{reader.GetString(0)}.{reader.GetString(1)}"));
-        }
-        RebuildExplorerTree();
-    }
-
-    private static string MapObjectGroup(string typeDescription) => typeDescription switch
-    {
-        "USER_TABLE" => "Tables",
-        "VIEW" => "Views",
-        "SQL_STORED_PROCEDURE" or "CLR_STORED_PROCEDURE" => "Stored Procedures",
-        "SQL_SCALAR_FUNCTION" or "SQL_TABLE_VALUED_FUNCTION" or "SQL_INLINE_TABLE_VALUED_FUNCTION" or "CLR_SCALAR_FUNCTION" or "CLR_TABLE_VALUED_FUNCTION" => "Functions",
-        "SQL_TRIGGER" or "CLR_TRIGGER" => "Triggers",
-        "SYNONYM" => "Synonyms",
-        _ => "Other Objects"
-    };
-
-    private void RebuildExplorerTree()
-    {
         SchemaTree.Items.Clear();
-        var database = new TreeViewItem { Header = $"{connection?.Database}  (Database)", IsExpanded = true };
-        var order = new[] { "Tables", "Views", "Stored Procedures", "Functions", "Triggers", "Synonyms", "Other Objects" };
-        var filter = ExplorerFilter?.Text.Trim() ?? "";
-        foreach (var groupName in order)
-        {
-            var matches = schemaItems.Where(item => item.Group == groupName && (filter.Length == 0 || item.Header.Contains(filter, StringComparison.OrdinalIgnoreCase))).ToList();
-            if (matches.Count == 0) continue;
-            var group = new TreeViewItem { Header = $"{groupName} ({matches.Count})", IsExpanded = groupName is "Tables" or "Views" };
-            foreach (var match in matches) group.Items.Add(new TreeViewItem { Header = match.Header, Tag = match.Header });
-            database.Items.Add(group);
-        }
+        var database = new TreeViewItem { Header = $"{connection.Database}  (Database)", Tag = new ExplorerNode("Database"), IsExpanded = true };
+        AddExpandable(database, "Tables", "Tables");
+        AddExpandable(database, "Views", "Views");
+        var programmable = AddExpandable(database, "Programmability", "Programmability");
+        AddExpandable(programmable, "Stored Procedures", "Procedures");
+        AddExpandable(programmable, "Functions", "Functions");
+        AddExpandable(programmable, "Triggers", "Triggers");
+        AddExpandable(database, "Synonyms", "Synonyms");
+        AddExpandable(database, "Security", "Security");
         SchemaTree.Items.Add(database);
     }
 
-    private void ExplorerFilter_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e) => RebuildExplorerTree();
+    private static TreeViewItem AddExpandable(TreeViewItem parent, string header, string kind, string schema = "", string name = "")
+    {
+        var item = new TreeViewItem { Header = header, Tag = new ExplorerNode(kind, schema, name) };
+        item.Items.Add(new TreeViewItem { Header = "" });
+        parent.Items.Add(item);
+        return item;
+    }
+
+    private async void SchemaTree_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not TreeViewItem item || item.Tag is not ExplorerNode node || item.Items.Count != 1 || item.Items[0] is not TreeViewItem placeholder || placeholder.Header?.ToString() != "") return;
+        item.Items.Clear();
+        try { await LoadExplorerChildrenAsync(item, node); }
+        catch (Exception ex) { item.Items.Add(new TreeViewItem { Header = $"Hata: {ex.Message}" }); }
+    }
+
+    private async Task LoadExplorerChildrenAsync(TreeViewItem parent, ExplorerNode node)
+    {
+        switch (node.Kind)
+        {
+            case "Tables": await AddObjectsAsync(parent, "U", "Table"); break;
+            case "Views": await AddObjectsAsync(parent, "V", "View"); break;
+            case "Procedures": await AddObjectsAsync(parent, "P", "Procedure"); break;
+            case "Functions": await AddFunctionsAsync(parent); break;
+            case "Triggers": await AddObjectsAsync(parent, "TR", "Trigger"); break;
+            case "Synonyms": await AddObjectsAsync(parent, "SN", "Synonym"); break;
+            case "Table": AddExpandable(parent, "Columns", "TableColumns", node.Schema, node.Name); AddExpandable(parent, "Indexes", "TableIndexes", node.Schema, node.Name); AddExpandable(parent, "Keys", "TableKeys", node.Schema, node.Name); AddExpandable(parent, "Constraints", "TableConstraints", node.Schema, node.Name); AddExpandable(parent, "Triggers", "TableTriggers", node.Schema, node.Name); break;
+            case "View": AddExpandable(parent, "Columns", "ViewColumns", node.Schema, node.Name); break;
+            case "Procedure": AddExpandable(parent, "Parameters", "ProcedureParameters", node.Schema, node.Name); AddExpandable(parent, "Definition", "ProcedureDefinition", node.Schema, node.Name); break;
+            case "Function": AddExpandable(parent, "Parameters", "FunctionParameters", node.Schema, node.Name); AddExpandable(parent, "Return columns", "FunctionColumns", node.Schema, node.Name); AddExpandable(parent, "Definition", "FunctionDefinition", node.Schema, node.Name); break;
+            case "TableColumns": await AddRowsAsync(parent, "SELECT c.name, TYPE_NAME(c.user_type_id) + CASE WHEN c.max_length = -1 THEN '(max)' ELSE '' END FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY c.column_id", node); break;
+            case "ViewColumns": await AddRowsAsync(parent, "SELECT c.name, TYPE_NAME(c.user_type_id) FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY c.column_id", node); break;
+            case "TableIndexes": await AddRowsAsync(parent, "SELECT i.name, i.type_desc FROM sys.indexes i JOIN sys.objects o ON o.object_id=i.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name AND i.name IS NOT NULL ORDER BY i.name", node); break;
+            case "TableKeys": await AddRowsAsync(parent, "SELECT kc.name, kc.type_desc FROM sys.key_constraints kc JOIN sys.objects o ON o.object_id=kc.parent_object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY kc.name", node); break;
+            case "TableConstraints": await AddRowsAsync(parent, "SELECT cc.name, cc.type_desc FROM sys.objects cc JOIN sys.objects o ON o.object_id=cc.parent_object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name AND cc.type IN ('C','D','F') ORDER BY cc.name", node); break;
+            case "TableTriggers": await AddRowsAsync(parent, "SELECT t.name, t.type_desc FROM sys.triggers t JOIN sys.objects o ON o.object_id=t.parent_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY t.name", node); break;
+            case "ProcedureParameters": case "FunctionParameters": await AddRowsAsync(parent, "SELECT p.name, TYPE_NAME(p.user_type_id) FROM sys.parameters p JOIN sys.objects o ON o.object_id=p.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY p.parameter_id", node); break;
+            case "ProcedureDefinition": case "FunctionDefinition": await AddDefinitionAsync(parent, node); break;
+            case "FunctionColumns": await AddRowsAsync(parent, "SELECT c.name, TYPE_NAME(c.user_type_id) FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE s.name=@schema AND o.name=@name ORDER BY c.column_id", node); break;
+            case "Security": await AddRowsAsync(parent, "SELECT name, type_desc FROM sys.database_principals WHERE principal_id > 4 ORDER BY type_desc, name", node); break;
+        }
+    }
+
+    private async Task AddObjectsAsync(TreeViewItem parent, string type, string kind)
+    {
+        await using var command = new SqlCommand("SELECT s.name, o.name FROM sys.objects o JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.is_ms_shipped=0 AND o.type=@type ORDER BY s.name,o.name", connection);
+        command.Parameters.AddWithValue("@type", type); await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), kind, reader.GetString(0), reader.GetString(1));
+    }
+
+    private async Task AddFunctionsAsync(TreeViewItem parent)
+    {
+        await using var command = new SqlCommand("SELECT s.name, o.name FROM sys.objects o JOIN sys.schemas s ON s.schema_id=o.schema_id WHERE o.is_ms_shipped=0 AND o.type IN ('FN','IF','TF','FS','FT') ORDER BY s.name,o.name", connection);
+        await using var reader = await command.ExecuteReaderAsync(); while (await reader.ReadAsync()) AddExpandable(parent, reader.GetString(0) + "." + reader.GetString(1), "Function", reader.GetString(0), reader.GetString(1));
+    }
+
+    private async Task AddRowsAsync(TreeViewItem parent, string sql, ExplorerNode node)
+    {
+        await using var command = new SqlCommand(sql, connection); command.Parameters.AddWithValue("@schema", node.Schema); command.Parameters.AddWithValue("@name", node.Name); await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) parent.Items.Add(new TreeViewItem { Header = reader.GetString(0) + (reader.IsDBNull(1) ? "" : "  ·  " + reader.GetValue(1)) });
+    }
+
+    private async Task AddDefinitionAsync(TreeViewItem parent, ExplorerNode node)
+    {
+        await using var command = new SqlCommand("SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@schema)+'.'+QUOTENAME(@name)))", connection); command.Parameters.AddWithValue("@schema", node.Schema); command.Parameters.AddWithValue("@name", node.Name); var value = await command.ExecuteScalarAsync(); parent.Items.Add(new TreeViewItem { Header = value is null ? "Tanım okunamadı" : "Tanım hazır (çift tıklayıp sorguya ekleyebilirsin)" });
+    }
+
+    private void ExplorerFilter_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e) { }
 
     private async void Execute_Click(object sender, RoutedEventArgs e)
     {
