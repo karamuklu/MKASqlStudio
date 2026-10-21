@@ -11,6 +11,7 @@ using System.Windows.Documents;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using Microsoft.Data.SqlClient;
 
@@ -228,6 +229,13 @@ public partial class MainWindow
             .ToList();
         IntelliSenseList.ItemsSource = candidates;
         IntelliSenseList.SelectedIndex = candidates.Count == 0 ? -1 : 0;
+        if (candidates.Count > 0)
+        {
+            var caretRect = SqlEditor.CaretPosition.GetCharacterRect(LogicalDirection.Forward);
+            IntelliSensePopup.Placement = PlacementMode.Relative;
+            IntelliSensePopup.HorizontalOffset = Math.Max(0, caretRect.X);
+            IntelliSensePopup.VerticalOffset = Math.Max(0, caretRect.Bottom);
+        }
         IntelliSensePopup.IsOpen = candidates.Count > 0;
     }
 
@@ -281,6 +289,9 @@ public partial class MainWindow
     {
         if (string.IsNullOrEmpty(text)) return;
         if (suppressEditorChanges) return;
+        var caretOffset = GetCaretOffset();
+        var selectionStartOffset = GetTextPointerOffset(SqlEditor.Selection.Start);
+        var selectionEndOffset = GetTextPointerOffset(SqlEditor.Selection.End);
         suppressEditorChanges = true;
         try
         {
@@ -290,8 +301,20 @@ public partial class MainWindow
             ApplyMatches(text, @"'(?:''|[^'])*'|""(?:""""|[^""])*""", Color.FromRgb(180, 83, 9), FontStyles.Normal);
             ApplyMatches(text, $@"\b({string.Join("|", sqlKeywords.Select(Regex.Escape))})\b", Color.FromRgb(37, 99, 235), FontStyles.Normal, FontWeights.SemiBold);
         }
-        finally { suppressEditorChanges = false; }
+        finally
+        {
+            suppressEditorChanges = false;
+            var currentTextLength = GetEditorText().Length;
+            var restoredCaretOffset = Math.Min(caretOffset, currentTextLength);
+            var restoredStartOffset = Math.Min(selectionStartOffset, currentTextLength);
+            var restoredEndOffset = Math.Min(selectionEndOffset, currentTextLength);
+            SqlEditor.Selection.Select(GetTextPointerAtOffset(restoredStartOffset), GetTextPointerAtOffset(restoredEndOffset));
+            SqlEditor.CaretPosition = GetTextPointerAtOffset(restoredCaretOffset);
+        }
     }
+
+    private int GetTextPointerOffset(TextPointer pointer)
+        => new TextRange(SqlEditor.Document.ContentStart, pointer).Text.TrimEnd('\r', '\n').Length;
 
     private void ApplyMatches(string text, string pattern, Color color, FontStyle style, FontWeight? weight = null)
     {
