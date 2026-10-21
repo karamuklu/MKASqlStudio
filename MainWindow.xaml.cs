@@ -32,6 +32,7 @@ public partial class MainWindow
     {
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
+        IntelliSensePopup.PlacementTarget = SqlEditor;
         SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
         activeQueryTab = QueryTabs.SelectedItem as TabItem;
         if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
@@ -392,3 +393,4 @@ public partial class MainWindow
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "MKA SQL Studio\nWindows MSSQL çalışma alanı\nSürüm 0.2.0", "Hakkında");
     private void ShowError(string title, Exception ex) { MessagesBox.Text = ex.Message; MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error); }
 }
+
