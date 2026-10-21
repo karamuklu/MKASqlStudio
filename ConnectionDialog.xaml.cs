@@ -7,8 +7,26 @@ public partial class ConnectionDialog
 {
     public string ConnectionString { get; private set; } = "";
     private SqlConnectionStringBuilder? serverBuilder;
-    public ConnectionDialog() { InitializeComponent(); UpdateCredentialsState(); }
+    public ConnectionProfile? SelectedProfile { get; private set; }
+    public ConnectionDialog()
+    {
+        InitializeComponent();
+        SavedConnectionsBox.ItemsSource = ConnectionProfileStore.Load();
+        UpdateCredentialsState();
+    }
     private void AuthBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => UpdateCredentialsState();
+    private void SavedConnectionsBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (SavedConnectionsBox.SelectedItem is not ConnectionProfile profile) return;
+        ServerBox.Text = profile.Server;
+        AuthBox.SelectedIndex = profile.WindowsAuthentication ? 0 : 1;
+        UserBox.Text = profile.UserName;
+        PasswordBox.Password = profile.Password;
+        DatabaseBox.Items.Clear();
+        DatabaseBox.Items.Add(profile.Database);
+        DatabaseBox.SelectedIndex = 0;
+        DatabaseBox.IsEnabled = true;
+    }
     private void UpdateCredentialsState() { if (UserBox is null) return; var enabled = AuthBox.SelectedIndex == 1; UserBox.IsEnabled = enabled; PasswordBox.IsEnabled = enabled; }
     private async void LoadDatabases_Click(object sender, RoutedEventArgs e)
     {
@@ -31,9 +49,12 @@ public partial class ConnectionDialog
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
         if (DatabaseBox.SelectedItem is null) { MessageBox.Show(this, "Önce sunucuya bağlanıp bir veritabanı seçin.", "Veritabanı gerekli"); return; }
-        ConnectionString = BuildBuilder(DatabaseBox.SelectedItem.ToString()!).ConnectionString;
+        var database = DatabaseBox.SelectedItem.ToString()!;
+        ConnectionString = BuildBuilder(database).ConnectionString;
+        SelectedProfile = new ConnectionProfile { Server = ServerBox.Text.Trim(), Database = database, WindowsAuthentication = AuthBox.SelectedIndex == 0, UserName = UserBox.Text.Trim(), Password = PasswordBox.Password };
         DialogResult = true;
     }
 
     private SqlConnectionStringBuilder BuildBuilder(string database) { var builder = new SqlConnectionStringBuilder { DataSource = ServerBox.Text.Trim(), InitialCatalog = database, Encrypt = true, TrustServerCertificate = true, ConnectTimeout = 10 }; if (AuthBox.SelectedIndex == 0) builder.IntegratedSecurity = true; else { builder.UserID = UserBox.Text.Trim(); builder.Password = PasswordBox.Password; } return builder; }
 }
+

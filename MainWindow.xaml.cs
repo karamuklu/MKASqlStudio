@@ -23,6 +23,7 @@ public partial class MainWindow
     private SqlConnection? connection;
     private CancellationTokenSource? queryCancellation;
     private bool suppressEditorChanges;
+    private readonly DispatcherTimer syntaxHighlightTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private TabItem? activeQueryTab;
     private int queryNumber = 1;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
@@ -35,6 +36,7 @@ public partial class MainWindow
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
         IntelliSensePopup.PlacementTarget = SqlEditor;
+        syntaxHighlightTimer.Tick += SyntaxHighlightTimer_Tick;
         Loaded += MainWindow_Loaded;
     }
 
@@ -60,6 +62,7 @@ public partial class MainWindow
             connection?.Dispose();
             connection = new SqlConnection(dialog.ConnectionString);
             await connection.OpenAsync();
+            if (dialog.SelectedProfile is not null) ConnectionProfileStore.Save(dialog.SelectedProfile);
             ConnectionLabel.Text = connection.DataSource + (string.IsNullOrWhiteSpace(connection.Database) ? "" : $"\n{connection.Database}");
             TopConnectionText.Text = $"  {connection.DataSource} · {connection.Database}";
             StatusText.Text = "Bağlandı";
@@ -195,8 +198,15 @@ public partial class MainWindow
         if (suppressEditorChanges) return;
         var text = GetEditorText();
         LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, text.Count(character => character == '\n') + 1)));
-        ApplySyntaxHighlighting(text);
         ShowIntelliSense(false);
+        syntaxHighlightTimer.Stop();
+        syntaxHighlightTimer.Start();
+    }
+
+    private void SyntaxHighlightTimer_Tick(object? sender, EventArgs e)
+    {
+        syntaxHighlightTimer.Stop();
+        ApplySyntaxHighlighting(GetEditorText());
     }
 
     private void SqlEditor_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -299,9 +309,9 @@ public partial class MainWindow
     {
         if (string.IsNullOrEmpty(text)) return;
         if (suppressEditorChanges) return;
-        var caretOffset = GetCaretOffset();
-        var selectionStartOffset = GetTextPointerOffset(SqlEditor.Selection.Start);
-        var selectionEndOffset = GetTextPointerOffset(SqlEditor.Selection.End);
+        var caretPosition = SqlEditor.CaretPosition;
+        var selectionStart = SqlEditor.Selection.Start;
+        var selectionEnd = SqlEditor.Selection.End;
         suppressEditorChanges = true;
         try
         {
@@ -314,17 +324,10 @@ public partial class MainWindow
         finally
         {
             suppressEditorChanges = false;
-            var currentTextLength = GetEditorText().Length;
-            var restoredCaretOffset = Math.Min(caretOffset, currentTextLength);
-            var restoredStartOffset = Math.Min(selectionStartOffset, currentTextLength);
-            var restoredEndOffset = Math.Min(selectionEndOffset, currentTextLength);
-            SqlEditor.Selection.Select(GetTextPointerAtOffset(restoredStartOffset), GetTextPointerAtOffset(restoredEndOffset));
-            SqlEditor.CaretPosition = GetTextPointerAtOffset(restoredCaretOffset);
+            SqlEditor.Selection.Select(selectionStart, selectionEnd);
+            SqlEditor.CaretPosition = caretPosition;
         }
     }
-
-    private int GetTextPointerOffset(TextPointer pointer)
-        => new TextRange(SqlEditor.Document.ContentStart, pointer).Text.TrimEnd('\r', '\n').Length;
 
     private void ApplyMatches(string text, string pattern, Color color, FontStyle style, FontWeight? weight = null)
     {
