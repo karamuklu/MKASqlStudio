@@ -13,6 +13,7 @@ using System.Windows.Input;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Data.SqlClient;
 
 namespace WindowsMssqlStudio;
@@ -34,10 +35,19 @@ public partial class MainWindow
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
         IntelliSensePopup.PlacementTarget = SqlEditor;
-        SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
-        activeQueryTab = QueryTabs.SelectedItem as TabItem;
-        if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
-        SqlEditor.Focus();
+        Loaded += MainWindow_Loaded;
+    }
+
+    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        Loaded -= MainWindow_Loaded;
+        Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
+        {
+            SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
+            activeQueryTab = QueryTabs.SelectedItem as TabItem;
+            if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
+            SqlEditor.Focus();
+        });
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
