@@ -276,10 +276,24 @@ public partial class MainWindow
     {
         if (suppressEditorChanges) return;
         var text = GetEditorText();
-        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, text.Count(character => character == '\n') + 1)));
-        ShowIntelliSense(false);
+        UpdateLineNumbers(text);
+        var caret = GetCaretOffset();
+        var beforeCaret = text[..Math.Min(caret, text.Length)];
+        var shouldSuggest = beforeCaret.EndsWith(".", StringComparison.Ordinal) || Regex.IsMatch(beforeCaret, @"[A-Za-z_]\w{1,}$");
+        ShowIntelliSense(shouldSuggest);
         syntaxHighlightTimer.Stop();
         syntaxHighlightTimer.Start();
+    }
+
+    private void SqlEditor_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        LineNumbers.Margin = new Thickness(0, 14 - e.VerticalOffset, 11, 0);
+    }
+
+    private void UpdateLineNumbers(string text)
+    {
+        var lineCount = Math.Max(1, text.Count(character => character == '\n') + 1);
+        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, lineCount));
     }
 
     private void SyntaxHighlightTimer_Tick(object? sender, EventArgs e)
@@ -316,7 +330,7 @@ public partial class MainWindow
         var start = beforeCaret.Length - 1;
         while (start >= 0 && (char.IsLetterOrDigit(beforeCaret[start]) || beforeCaret[start] is '_' or '#' or '@')) start--;
         var token = qualifiedMatch.Success ? qualifiedMatch.Groups["token"].Value : beforeCaret[(start + 1)..];
-        if (!force && token.Length < 2) { IntelliSensePopup.IsOpen = false; return; }
+        if (!force && token.Length < 2 && !beforeCaret.EndsWith(".", StringComparison.Ordinal)) { IntelliSensePopup.IsOpen = false; return; }
 
         var aliases = GetTableAliases(beforeCaret);
         var qualifiedTable = aliases.TryGetValue(qualifier, out var aliasTable) ? aliasTable : "";
@@ -391,24 +405,45 @@ public partial class MainWindow
         SqlEditor.CaretPosition = SqlEditor.Document.ContentEnd;
         suppressEditorChanges = false;
         ApplySyntaxHighlighting(text);
-        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, text.Count(character => character == '\n') + 1)));
+        UpdateLineNumbers(text);
     }
 
-    private int GetCaretOffset() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.CaretPosition).Text.TrimEnd('\r', '\n').Length;
+    private int GetCaretOffset() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.CaretPosition).Text.Length;
+
+    private int GetTextOffset(TextPointer pointer) => new TextRange(SqlEditor.Document.ContentStart, pointer).Text.Length;
 
     private TextPointer GetTextPointerAtOffset(int offset)
     {
         var pointer = SqlEditor.Document.ContentStart;
-        return pointer.GetPositionAtOffset(Math.Max(0, offset), LogicalDirection.Forward) ?? SqlEditor.Document.ContentEnd;
+        var remaining = Math.Max(0, offset);
+        while (pointer is not null)
+        {
+            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.Text)
+            {
+                var run = pointer.GetTextInRun(LogicalDirection.Forward);
+                if (remaining <= run.Length) return pointer.GetPositionAtOffset(remaining, LogicalDirection.Forward) ?? SqlEditor.Document.ContentEnd;
+                remaining -= run.Length;
+                pointer = pointer.GetPositionAtOffset(run.Length, LogicalDirection.Forward);
+                continue;
+            }
+
+            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.ElementEnd && pointer.Parent is Paragraph)
+            {
+                if (remaining <= 2) return pointer;
+                remaining -= 2;
+            }
+            pointer = pointer.GetNextContextPosition(LogicalDirection.Forward);
+        }
+        return SqlEditor.Document.ContentEnd;
     }
 
     private void ApplySyntaxHighlighting(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
         if (suppressEditorChanges) return;
-        var caretPosition = SqlEditor.CaretPosition;
-        var selectionStart = SqlEditor.Selection.Start;
-        var selectionEnd = SqlEditor.Selection.End;
+        var caretOffset = GetCaretOffset();
+        var selectionStartOffset = GetTextOffset(SqlEditor.Selection.Start);
+        var selectionEndOffset = GetTextOffset(SqlEditor.Selection.End);
         suppressEditorChanges = true;
         try
         {
@@ -421,8 +456,10 @@ public partial class MainWindow
         finally
         {
             suppressEditorChanges = false;
+            var selectionStart = GetTextPointerAtOffset(selectionStartOffset);
+            var selectionEnd = GetTextPointerAtOffset(selectionEndOffset);
             SqlEditor.Selection.Select(selectionStart, selectionEnd);
-            SqlEditor.CaretPosition = caretPosition;
+            SqlEditor.CaretPosition = GetTextPointerAtOffset(caretOffset);
         }
     }
 
