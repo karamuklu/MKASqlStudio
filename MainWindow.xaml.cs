@@ -14,12 +14,14 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Reflection;
 using Microsoft.Data.SqlClient;
 
 namespace WindowsMssqlStudio;
 
 public partial class MainWindow
 {
+    private static string AppVersion => Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.3.0";
     private SqlConnection? connection;
     private string? serverConnectionString;
     private bool changingDatabase;
@@ -42,6 +44,8 @@ public partial class MainWindow
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
         IntelliSensePopup.PlacementTarget = SqlEditor;
+        VersionText.Text = $"v{AppVersion} · SQL Server çalışma alanı";
+        FooterVersionText.Text = $"MKA SQL Studio · Windows · v{AppVersion}";
         syntaxHighlightTimer.Tick += SyntaxHighlightTimer_Tick;
         Loaded += MainWindow_Loaded;
     }
@@ -567,7 +571,20 @@ public partial class MainWindow
         try
         {
             using var client = new HttpClient();
-            client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MKASqlStudio", "0.2.0"));
+            client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MKASqlStudio", AppVersion));
+            var localVersion = Version.Parse(AppVersion);
+            using var versionResponse = await client.GetAsync("https://raw.githubusercontent.com/karamuklu/MKASqlStudio/main/version.json");
+            Version? remoteVersion = null;
+            if (versionResponse.IsSuccessStatusCode)
+            {
+                using var versionDocument = JsonDocument.Parse(await versionResponse.Content.ReadAsStringAsync());
+                if (Version.TryParse(versionDocument.RootElement.GetProperty("version").GetString(), out var parsedVersion)) remoteVersion = parsedVersion;
+            }
+            if (remoteVersion is not null && remoteVersion <= localVersion)
+            {
+                MessageBox.Show(this, $"Son sürüm yüklü.\nKurulu sürüm: v{AppVersion}", "Güncelleme");
+                return;
+            }
             using var response = await client.GetAsync("https://api.github.com/repos/karamuklu/MKASqlStudio/releases/latest");
             if (!response.IsSuccessStatusCode) { MessageBox.Show(this, "Henüz yayınlanmış bir sürüm bulunamadı. Güncellemeler GitHub Releases üzerinden yayınlanacak.", "Güncelleme"); return; }
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -586,14 +603,15 @@ public partial class MainWindow
             var scriptPath = Path.Combine(tempRoot, "apply-update.cmd");
             var script = $"@echo off\r\ntimeout /t 3 /nobreak >nul\r\nrobocopy \"{extractPath}\" \"{installPath}\" /E /IS /IT >nul\r\nstart \"\" \"{Path.Combine(installPath, "WindowsMssqlStudio.exe")}\"\r\n";
             await File.WriteAllTextAsync(scriptPath, script);
-            MessageBox.Show(this, $"{tag} güncellemesi indirildi. Uygulama kapanıp yeniden başlatılacak.", "Güncelleme");
+            MessageBox.Show(this, $"v{remoteVersion?.ToString(3) ?? tag} güncellemesi indirildi. Uygulama kapanıp yeniden başlatılacak.", "Güncelleme");
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { UseShellExecute = false, CreateNoWindow = true });
             Close();
         }
         catch (Exception ex) { ShowError("Güncelleme kontrolü başarısız", ex); }
     }
 
-    private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "MKA SQL Studio\nWindows MSSQL çalışma alanı\nSürüm 0.2.0", "Hakkında");
+    private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, $"MKA SQL Studio\nWindows MSSQL çalışma alanı\nSürüm v{AppVersion}", "Hakkında");
     private void ShowError(string title, Exception ex) { MessagesBox.Text = ex.Message; MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error); }
 }
+
 
