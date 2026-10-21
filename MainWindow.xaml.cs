@@ -5,10 +5,13 @@ using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Windows.Documents;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Data.SqlClient;
 
 namespace WindowsMssqlStudio;
@@ -17,7 +20,7 @@ public partial class MainWindow
 {
     private SqlConnection? connection;
     private CancellationTokenSource? queryCancellation;
-    private bool suppressIntelliSense;
+    private bool suppressEditorChanges;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
     private sealed record CompletionItem(string Display, string InsertText);
@@ -27,6 +30,7 @@ public partial class MainWindow
     {
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
+        SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
         SqlEditor.Focus();
     }
 
@@ -142,7 +146,11 @@ public partial class MainWindow
     private async Task AddRowsAsync(TreeViewItem parent, string sql, ExplorerNode node)
     {
         await using var command = new SqlCommand(sql, connection); command.Parameters.AddWithValue("@schema", node.Schema); command.Parameters.AddWithValue("@name", node.Name); await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync()) parent.Items.Add(new TreeViewItem { Header = reader.GetString(0) + (reader.IsDBNull(1) ? "" : "  ·  " + reader.GetValue(1)) });
+        while (await reader.ReadAsync())
+        {
+            completionSymbols.Add(reader.GetString(0));
+            parent.Items.Add(new TreeViewItem { Header = reader.GetString(0) + (reader.IsDBNull(1) ? "" : "  ·  " + reader.GetValue(1)) });
+        }
     }
 
     private async Task AddDefinitionAsync(TreeViewItem parent, ExplorerNode node)
@@ -168,12 +176,19 @@ public partial class MainWindow
 
     private void SqlEditor_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
-        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, SqlEditor.LineCount)));
-        if (!suppressIntelliSense) ShowIntelliSense(false);
+        if (suppressEditorChanges) return;
+        var text = GetEditorText();
+        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, text.Count(character => character == '\n') + 1)));
+        ApplySyntaxHighlighting(text);
+        ShowIntelliSense(false);
     }
 
     private void SqlEditor_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (Keyboard.Modifiers == ModifierKeys.Shift && e.Key == Key.D9) { InsertPair("()"); e.Handled = true; return; }
+        if (e.Key == Key.OemOpenBrackets) { InsertPair("[]"); e.Handled = true; return; }
+        if (e.Key == Key.OemQuotes) { InsertPair("''"); e.Handled = true; return; }
+
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
             ShowIntelliSense(true);
@@ -190,7 +205,9 @@ public partial class MainWindow
 
     private void ShowIntelliSense(bool force)
     {
-        var beforeCaret = SqlEditor.Text[..Math.Min(SqlEditor.CaretIndex, SqlEditor.Text.Length)];
+        var editorText = GetEditorText();
+        var caretIndex = GetCaretOffset();
+        var beforeCaret = editorText[..Math.Min(caretIndex, editorText.Length)];
         var start = beforeCaret.Length - 1;
         while (start >= 0 && (char.IsLetterOrDigit(beforeCaret[start]) || beforeCaret[start] is '_' or '#' or '@')) start--;
         var token = beforeCaret[(start + 1)..];
@@ -219,21 +236,77 @@ public partial class MainWindow
     private void InsertSelectedCompletion()
     {
         if (IntelliSenseList.SelectedItem is not CompletionItem selected) return;
-        var caret = SqlEditor.CaretIndex;
+        var editorText = GetEditorText();
+        var caret = GetCaretOffset();
         var start = caret - 1;
-        while (start >= 0 && (char.IsLetterOrDigit(SqlEditor.Text[start]) || SqlEditor.Text[start] is '_' or '#' or '@')) start--;
-        suppressIntelliSense = true;
-        SqlEditor.Select(start + 1, caret - start - 1);
-        SqlEditor.SelectedText = selected.InsertText;
-        SqlEditor.CaretIndex = start + 1 + selected.InsertText.Length;
-        suppressIntelliSense = false;
+        while (start >= 0 && (char.IsLetterOrDigit(editorText[start]) || editorText[start] is '_' or '#' or '@')) start--;
+        suppressEditorChanges = true;
+        var selectionStart = GetTextPointerAtOffset(start + 1);
+        var selectionEnd = GetTextPointerAtOffset(caret);
+        SqlEditor.Selection.Select(selectionStart, selectionEnd);
+        SqlEditor.Selection.Text = selected.InsertText;
+        SqlEditor.CaretPosition = GetTextPointerAtOffset(start + 1 + selected.InsertText.Length);
+        suppressEditorChanges = false;
+        ApplySyntaxHighlighting(GetEditorText());
         IntelliSensePopup.IsOpen = false;
+    }
+
+    private string GetEditorText() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd).Text.TrimEnd('\r', '\n');
+
+    private void SetEditorText(string text)
+    {
+        suppressEditorChanges = true;
+        SqlEditor.Document.Blocks.Clear();
+        SqlEditor.Document.Blocks.Add(new Paragraph(new Run(text)) { Margin = new Thickness(0) });
+        SqlEditor.CaretPosition = SqlEditor.Document.ContentEnd;
+        suppressEditorChanges = false;
+        ApplySyntaxHighlighting(text);
+        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, Math.Max(1, text.Count(character => character == '\n') + 1)));
+    }
+
+    private int GetCaretOffset() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.CaretPosition).Text.TrimEnd('\r', '\n').Length;
+
+    private TextPointer GetTextPointerAtOffset(int offset)
+    {
+        var pointer = SqlEditor.Document.ContentStart;
+        return pointer.GetPositionAtOffset(Math.Max(0, offset), LogicalDirection.Forward) ?? SqlEditor.Document.ContentEnd;
+    }
+
+    private void ApplySyntaxHighlighting(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        var all = new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd);
+        all.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(Color.FromRgb(31, 41, 55)));
+        ApplyMatches(text, @"--[^\r\n]*|/\*[\s\S]*?\*/", Color.FromRgb(22, 126, 80), FontStyles.Italic);
+        ApplyMatches(text, @"'(?:''|[^'])*'|""(?:""""|[^""])*""", Color.FromRgb(180, 83, 9), FontStyles.Normal);
+        ApplyMatches(text, $@"\b({string.Join("|", sqlKeywords.Select(Regex.Escape))})\b", Color.FromRgb(37, 99, 235), FontStyles.Normal, FontWeights.SemiBold);
+    }
+
+    private void ApplyMatches(string text, string pattern, Color color, FontStyle style, FontWeight? weight = null)
+    {
+        foreach (Match match in Regex.Matches(text, pattern, RegexOptions.IgnoreCase))
+        {
+            var range = new TextRange(GetTextPointerAtOffset(match.Index), GetTextPointerAtOffset(match.Index + match.Length));
+            range.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(color));
+            range.ApplyPropertyValue(TextElement.FontStyleProperty, style);
+            if (weight is not null) range.ApplyPropertyValue(TextElement.FontWeightProperty, weight.Value);
+        }
+    }
+
+    private void InsertPair(string pair)
+    {
+        suppressEditorChanges = true;
+        SqlEditor.Selection.Text = pair;
+        var caret = GetCaretOffset() - 1;
+        SqlEditor.CaretPosition = GetTextPointerAtOffset(caret);
+        suppressEditorChanges = false;
+        ApplySyntaxHighlighting(GetEditorText());
     }
 
     private async void Execute_Click(object sender, RoutedEventArgs e)
     {
         if (connection is null) { MessageBox.Show(this, "Önce bir SQL Server bağlantısı kurun.", "Bağlantı gerekli"); return; }
-        var sql = SqlEditor.SelectedText.Length > 0 ? SqlEditor.SelectedText : SqlEditor.Text;
+        var sql = SqlEditor.Selection.Text.Length > 0 ? SqlEditor.Selection.Text : GetEditorText();
         if (string.IsNullOrWhiteSpace(sql)) return;
         queryCancellation?.Cancel();
         queryCancellation = new CancellationTokenSource();
@@ -258,7 +331,7 @@ public partial class MainWindow
     private void Cancel_Click(object sender, RoutedEventArgs e) => queryCancellation?.Cancel();
     private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
     private async void RefreshSchema_Click(object sender, RoutedEventArgs e) { try { await LoadSchemaAsync(); StatusText.Text = "Şema yenilendi"; } catch (Exception ex) { ShowError("Şema yüklenemedi", ex); } }
-    private void NewQuery_Click(object sender, RoutedEventArgs e) => SqlEditor.Clear();
+    private void NewQuery_Click(object sender, RoutedEventArgs e) => SetEditorText("");
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     private void SqlEditor_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.F5) { Execute_Click(sender, e); e.Handled = true; } }
     private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
