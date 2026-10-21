@@ -280,11 +280,17 @@ public partial class MainWindow
     private void ApplySyntaxHighlighting(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        var all = new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd);
-        all.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(Color.FromRgb(31, 41, 55)));
-        ApplyMatches(text, @"--[^\r\n]*|/\*[\s\S]*?\*/", Color.FromRgb(22, 126, 80), FontStyles.Italic);
-        ApplyMatches(text, @"'(?:''|[^'])*'|""(?:""""|[^""])*""", Color.FromRgb(180, 83, 9), FontStyles.Normal);
-        ApplyMatches(text, $@"\b({string.Join("|", sqlKeywords.Select(Regex.Escape))})\b", Color.FromRgb(37, 99, 235), FontStyles.Normal, FontWeights.SemiBold);
+        if (suppressEditorChanges) return;
+        suppressEditorChanges = true;
+        try
+        {
+            var all = new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd);
+            all.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(Color.FromRgb(31, 41, 55)));
+            ApplyMatches(text, @"--[^\r\n]*|/\*[\s\S]*?\*/", Color.FromRgb(22, 126, 80), FontStyles.Italic);
+            ApplyMatches(text, @"'(?:''|[^'])*'|""(?:""""|[^""])*""", Color.FromRgb(180, 83, 9), FontStyles.Normal);
+            ApplyMatches(text, $@"\b({string.Join("|", sqlKeywords.Select(Regex.Escape))})\b", Color.FromRgb(37, 99, 235), FontStyles.Normal, FontWeights.SemiBold);
+        }
+        finally { suppressEditorChanges = false; }
     }
 
     private void ApplyMatches(string text, string pattern, Color color, FontStyle style, FontWeight? weight = null)
