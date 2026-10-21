@@ -186,11 +186,11 @@ public partial class MainWindow
             await File.WriteAllBytesAsync(zipPath, await client.GetByteArrayAsync(downloadUrl));
             ZipFile.ExtractToDirectory(zipPath, extractPath);
             var installPath = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-            var scriptPath = Path.Combine(tempRoot, "apply-update.ps1");
-            var script = $"Start-Sleep -Seconds 2\nCopy-Item -LiteralPath '{extractPath.Replace("'", "''")}\\*' -Destination '{installPath.Replace("'", "''")}' -Recurse -Force\nStart-Process -FilePath '{Path.Combine(installPath, "WindowsMssqlStudio.exe").Replace("'", "''")}'\n";
+            var scriptPath = Path.Combine(tempRoot, "apply-update.cmd");
+            var script = $"@echo off\r\ntimeout /t 3 /nobreak >nul\r\nrobocopy \"{extractPath}\" \"{installPath}\" /E /IS /IT >nul\r\nstart \"\" \"{Path.Combine(installPath, "WindowsMssqlStudio.exe")}\"\r\n";
             await File.WriteAllTextAsync(scriptPath, script);
             MessageBox.Show(this, $"{tag} güncellemesi indirildi. Uygulama kapanıp yeniden başlatılacak.", "Güncelleme");
-            Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\")") { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { UseShellExecute = false, CreateNoWindow = true });
             Close();
         }
         catch (Exception ex) { ShowError("Güncelleme kontrolü başarısız", ex); }

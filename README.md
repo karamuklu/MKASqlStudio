@@ -30,6 +30,12 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 Uygulama SQL Server’a erişebilen makinede çalıştırılmalıdır. MVP varsayılan olarak `Encrypt=True;TrustServerCertificate=True` kullanır; üretim ortamında sertifika doğrulamasını kurum politikanıza göre düzenleyin.
 
+## Kurulum ve güncelleme
+
+İlk kurulum için `Installer\Setup-MKASqlStudio.cmd` dosyasını, çalışma dosyalarını içeren `WindowsMssqlStudio-release.zip` ile aynı klasöre koyup çalıştırın. Kurulum uygulamayı `%LOCALAPPDATA%\MkaSqlStudio` altına açar ve masaüstüne `MKA SQL Studio` kısayolu ekler.
+
+Uygulama içindeki `Güncelle` düğmesi, GitHub’daki `karamuklu/MKASqlStudio` son sürümünün ZIP dosyasını indirir, uygulama kapandıktan sonra dosyaları kurulum klasörüne kopyalar ve uygulamayı yeniden açar. Güncelleme paketinin GitHub Release içine ZIP asset olarak eklenmesi gerekir.
+
 ## Sonraki adımlar
 
 Sekmeli sorgu belgeleri, filtre/sıralama, CSV/JSON dışa aktarma, prosedür ve kolon ağacı, ayarlar/profil saklama ve yürütme planı sonraki sürümlere ayrılabilir.
