@@ -21,6 +21,8 @@ public partial class MainWindow
     private SqlConnection? connection;
     private CancellationTokenSource? queryCancellation;
     private bool suppressEditorChanges;
+    private TabItem? activeQueryTab;
+    private int queryNumber = 1;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
     private sealed record CompletionItem(string Display, string InsertText);
@@ -31,6 +33,8 @@ public partial class MainWindow
         InitializeComponent();
         SchemaTree.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(SchemaTree_Expanded));
         SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
+        activeQueryTab = QueryTabs.SelectedItem as TabItem;
+        if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
         SqlEditor.Focus();
     }
 
@@ -331,7 +335,27 @@ public partial class MainWindow
     private void Cancel_Click(object sender, RoutedEventArgs e) => queryCancellation?.Cancel();
     private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
     private async void RefreshSchema_Click(object sender, RoutedEventArgs e) { try { await LoadSchemaAsync(); StatusText.Text = "Şema yenilendi"; } catch (Exception ex) { ShowError("Şema yüklenemedi", ex); } }
-    private void NewQuery_Click(object sender, RoutedEventArgs e) => SetEditorText("");
+    private void NewQuery_Click(object sender, RoutedEventArgs e)
+    {
+        SaveActiveQuery();
+        queryNumber++;
+        var tab = new TabItem { Header = $"●  SQLQuery{queryNumber}.sql", Tag = "" };
+        QueryTabs.Items.Add(tab);
+        QueryTabs.SelectedItem = tab;
+    }
+
+    private void QueryTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.Source != QueryTabs || QueryTabs.SelectedItem is not TabItem selected || selected == activeQueryTab) return;
+        SaveActiveQuery();
+        activeQueryTab = selected;
+        SetEditorText(selected.Tag as string ?? "");
+    }
+
+    private void SaveActiveQuery()
+    {
+        if (activeQueryTab is not null) activeQueryTab.Tag = GetEditorText();
+    }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     private void SqlEditor_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.F5) { Execute_Click(sender, e); e.Handled = true; } }
     private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
