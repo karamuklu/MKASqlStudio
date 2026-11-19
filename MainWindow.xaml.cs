@@ -554,7 +554,10 @@ public partial class MainWindow
         suppressEditorChanges = true;
         SqlEditor.Select(start + 1, caret - start - 1);
         SqlEditor.SelectedText = selected.InsertText;
-        SqlEditor.CaretOffset = start + 1 + selected.InsertText.Length;
+        var newCaret = start + 1 + selected.InsertText.Length;
+        SqlEditor.Select(newCaret, 0);
+        SqlEditor.CaretOffset = newCaret;
+        SqlEditor.Focus();
         suppressEditorChanges = false;
         IntelliSensePopup.IsOpen = false;
     }
@@ -599,6 +602,7 @@ public partial class MainWindow
             resultFilters.Clear();
             ResultsGrid.ItemsSource = resultView;
             ResultSummaryText.Text = $"  {table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms · Başlıklardaki alanlardan filtrele";
+            UpdateResultTotals();
             stopwatch.Stop();
             TimingText.Text = $"{table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms";
             MessagesBox.Text = "Sorgu başarıyla tamamlandı.";
@@ -642,11 +646,41 @@ public partial class MainWindow
         {
             resultView.RowFilter = string.Join(" AND ", resultFilters.Select(item =>
                 $"CONVERT([{item.Key.Replace("]", "]]", StringComparison.Ordinal)}], 'System.String') LIKE '%{item.Value.Replace("'", "''", StringComparison.Ordinal)}%'"));
+            UpdateResultTotals();
         }
         catch (EvaluateException)
         {
             resultView.RowFilter = "";
+            UpdateResultTotals();
         }
+    }
+
+    private void UpdateResultTotals()
+    {
+        if (resultView?.Table is not DataTable table)
+        {
+            ResultTotalsText.Text = "Toplamlar: —";
+            return;
+        }
+
+        var numericTypes = new[] { typeof(byte), typeof(short), typeof(int), typeof(long), typeof(float), typeof(double), typeof(decimal) };
+        var totals = new List<string>();
+        foreach (DataColumn column in table.Columns)
+        {
+            if (!numericTypes.Contains(column.DataType)) continue;
+            decimal total = 0;
+            foreach (DataRowView row in resultView)
+            {
+                if (row.Row.IsNull(column)) continue;
+                try { total += Convert.ToDecimal(row.Row[column], System.Globalization.CultureInfo.InvariantCulture); }
+                catch (FormatException) { }
+                catch (InvalidCastException) { }
+            }
+            totals.Add($"{column.ColumnName}: {total:N2}");
+        }
+        ResultTotalsText.Text = totals.Count == 0
+            ? $"Toplamlar: sayısal sütun yok · {resultView.Count:N0} görünen satır"
+            : $"Toplamlar · {resultView.Count:N0} görünen satır:  " + string.Join("   ·   ", totals);
     }
 
     private void CopyResults_Click(object sender, RoutedEventArgs e)
@@ -660,6 +694,7 @@ public partial class MainWindow
         resultFilters.Clear();
         if (resultView is not null) resultView.RowFilter = string.Empty;
         ResultSummaryText.Text = resultView is null ? "  Sorgu sonucu" : $"  {resultView.Count:N0} satır · Filtre yok";
+        UpdateResultTotals();
         foreach (var filter in FindVisualChildren<TextBox>(ResultsGrid))
             if (filter.Tag is string) filter.Clear();
     }
