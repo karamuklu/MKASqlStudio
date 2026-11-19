@@ -478,9 +478,13 @@ public partial class MainWindow
 
         var aliases = GetTableAliases(beforeCaret);
         var qualifiedTable = aliases.TryGetValue(qualifier, out var aliasTable) ? aliasTable : "";
+        if (string.IsNullOrWhiteSpace(qualifiedTable) && !string.IsNullOrWhiteSpace(qualifier))
+            qualifiedTable = ResolveTableForAlias(beforeCaret, qualifier);
         var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+(?:[A-Za-z_]\w*\.)?[A-Za-z_]*$", RegexOptions.IgnoreCase);
         var candidateSource = !string.IsNullOrWhiteSpace(qualifiedTable) && tableColumns.TryGetValue(qualifiedTable, out var columns)
             ? columns.Concat(["*"])
+            : qualifiedMatch.Success
+                ? []
             : tableContext
                 ? sqlKeywords.Concat(tableNames).Concat(completionSymbols.Where(value => !tableNames.Contains(value)))
                 : sqlKeywords.Concat(tableNames);
@@ -519,6 +523,19 @@ public partial class MainWindow
     }
 
     private static string UnquoteIdentifier(string value) => value.Trim().Trim('[', ']');
+
+    private string ResolveTableForAlias(string text, string alias)
+    {
+        const string pattern = @"(?:FROM|JOIN)\s+(?<source>(?:\[[^\]]+\]|[A-Za-z_]\w*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_]\w*))?)\s+(?:AS\s+)?(?<alias>[A-Za-z_]\w*)\b";
+        foreach (Match match in Regex.Matches(text, pattern, RegexOptions.IgnoreCase))
+        {
+            if (!string.Equals(match.Groups["alias"].Value, alias, StringComparison.OrdinalIgnoreCase)) continue;
+            var source = match.Groups["source"].Value.Replace(" ", "", StringComparison.Ordinal);
+            var parts = source.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length == 2 ? $"{UnquoteIdentifier(parts[0])}.{UnquoteIdentifier(parts[1])}" : UnquoteIdentifier(source);
+        }
+        return "";
+    }
 
     private void MoveCompletion(int offset)
     {
