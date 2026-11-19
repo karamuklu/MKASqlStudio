@@ -16,6 +16,8 @@ using System.Windows.Threading;
 using System.Reflection;
 using Microsoft.Data.SqlClient;
 using ICSharpCode.AvalonEdit.Highlighting;
+using ICSharpCode.AvalonEdit.Highlighting.Xshd;
+using System.Xml;
 
 namespace WindowsMssqlStudio;
 
@@ -46,7 +48,7 @@ public partial class MainWindow
         SchemaTree.AddHandler(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(SchemaTree_ContextMenuOpening));
         SchemaTree.MouseDoubleClick += SchemaTree_MouseDoubleClick;
         IntelliSensePopup.PlacementTarget = SqlEditor;
-        SqlEditor.SyntaxHighlighting = HighlightingManager.Instance.GetDefinition("SQL");
+        ConfigureSqlHighlighting();
         VersionText.Text = $"v{AppVersion} · SQL Server çalışma alanı";
         HeaderVersionText.Text = $"v{AppVersion}";
         UpdateButton.Content = $"v{AppVersion}  Güncelle";
@@ -54,7 +56,34 @@ public partial class MainWindow
         ResultsGrid.RowHeight = 28;
         ResultsGrid.EnableRowVirtualization = true;
         ResultsGrid.EnableColumnVirtualization = true;
+        ResultsGrid.SelectionUnit = DataGridSelectionUnit.FullRow;
+        ResultsGrid.ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader;
         Loaded += MainWindow_Loaded;
+    }
+
+    private void ConfigureSqlHighlighting()
+    {
+        const string definition = """
+            <SyntaxDefinition name="MSSQL Studio" extensions=".sql" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+              <Color name="Keyword" foreground="#0759C7" fontWeight="bold" />
+              <Color name="Comment" foreground="#4F8A10" />
+              <Color name="String" foreground="#A31515" />
+              <Color name="Variable" foreground="#C000C0" />
+              <Color name="Number" foreground="#098658" />
+              <RuleSet ignoreCase="true">
+                <Span color="Comment" begin="--" end="$" />
+                <Span color="Comment" multiline="true" begin="/\\*" end="\\*/" />
+                <Span color="String" begin="'" end="'" escapeCharacter="'" />
+                <Rule color="Variable">\\@[A-Za-z_][A-Za-z0-9_]*</Rule>
+                <Rule color="Number">\\b[0-9]+(\\.[0-9]+)?\\b</Rule>
+                <Keywords color="Keyword">
+                  <Word>SELECT</Word><Word>FROM</Word><Word>WHERE</Word><Word>JOIN</Word><Word>INNER</Word><Word>LEFT</Word><Word>RIGHT</Word><Word>FULL</Word><Word>OUTER</Word><Word>ON</Word><Word>AS</Word><Word>AND</Word><Word>OR</Word><Word>NOT</Word><Word>NULL</Word><Word>IS</Word><Word>IN</Word><Word>LIKE</Word><Word>BETWEEN</Word><Word>GROUP</Word><Word>BY</Word><Word>ORDER</Word><Word>HAVING</Word><Word>TOP</Word><Word>DISTINCT</Word><Word>INSERT</Word><Word>INTO</Word><Word>VALUES</Word><Word>UPDATE</Word><Word>SET</Word><Word>DELETE</Word><Word>MERGE</Word><Word>CREATE</Word><Word>ALTER</Word><Word>DROP</Word><Word>EXEC</Word><Word>DECLARE</Word><Word>BEGIN</Word><Word>END</Word><Word>CASE</Word><Word>WHEN</Word><Word>THEN</Word><Word>ELSE</Word><Word>WITH</Word><Word>UNION</Word><Word>ALL</Word><Word>COUNT</Word><Word>SUM</Word><Word>AVG</Word><Word>MIN</Word><Word>MAX</Word>
+                </Keywords>
+              </RuleSet>
+            </SyntaxDefinition>
+            """;
+        using var reader = XmlReader.Create(new StringReader(definition));
+        SqlEditor.SyntaxHighlighting = HighlightingLoader.Load(reader, HighlightingManager.Instance);
     }
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -447,8 +476,10 @@ public partial class MainWindow
 
         var aliases = GetTableAliases(beforeCaret);
         var qualifiedTable = aliases.TryGetValue(qualifier, out var aliasTable) ? aliasTable : "";
-        var candidateSource = !string.IsNullOrWhiteSpace(qualifiedTable) && tableColumns.TryGetValue(qualifiedTable, out var columns) ? columns : sqlKeywords.Concat(completionSymbols);
-        var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+[A-Za-z_]*$", RegexOptions.IgnoreCase);
+        var candidateSource = !string.IsNullOrWhiteSpace(qualifiedTable) && tableColumns.TryGetValue(qualifiedTable, out var columns)
+            ? columns.Concat(["*"])
+            : sqlKeywords.Concat(completionSymbols).Concat(tableColumns.Values.SelectMany(value => value));
+        var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+(?:[A-Za-z_]\w*\.)?[A-Za-z_]*$", RegexOptions.IgnoreCase);
         var candidates = candidateSource
             .Where(value => force || value.StartsWith(token, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -464,7 +495,7 @@ public partial class MainWindow
             var caretRect = SqlEditor.TextArea.Caret.CalculateCaretRectangle();
             IntelliSensePopup.Placement = PlacementMode.Relative;
             IntelliSensePopup.HorizontalOffset = Math.Max(0, caretRect.X);
-            IntelliSensePopup.VerticalOffset = Math.Max(0, caretRect.Bottom);
+            IntelliSensePopup.VerticalOffset = Math.Max(0, caretRect.Bottom + 4);
         }
         IntelliSensePopup.IsOpen = candidates.Count > 0;
     }
@@ -592,6 +623,20 @@ public partial class MainWindow
         {
             resultView.RowFilter = "";
         }
+    }
+
+    private void CopyResults_Click(object sender, RoutedEventArgs e)
+    {
+        if (ResultsGrid.SelectedItems.Count == 0) return;
+        ApplicationCommands.Copy.Execute(null, ResultsGrid);
+    }
+
+    private void ClearResultFilters_Click(object sender, RoutedEventArgs e)
+    {
+        resultFilters.Clear();
+        if (resultView is not null) resultView.RowFilter = string.Empty;
+        foreach (var filter in FindVisualChildren<TextBox>(ResultsGrid))
+            if (filter.Tag is string) filter.Clear();
     }
 
     private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; serverConnectionString = null; DatabaseSelector.Items.Clear(); DatabaseSelector.IsEnabled = false; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
