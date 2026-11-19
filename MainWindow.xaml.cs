@@ -596,12 +596,29 @@ public partial class MainWindow
             StatusText.Text = "Çalışıyor...";
             await using var command = new SqlCommand(sql, connection) { CommandTimeout = 60 };
             await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
-            var table = new DataTable();
-            table.Load(reader);
+            var tables = new List<DataTable>();
+            do
+            {
+                var resultTable = new DataTable();
+                resultTable.Load(reader);
+                if (resultTable.Columns.Count > 0) tables.Add(resultTable);
+            } while (await reader.NextResultAsync(queryCancellation.Token));
+            if (tables.Count == 0) { MessagesBox.Text = "Sorgu sonuç döndürmedi."; StatusText.Text = "Hazır"; return; }
+
+            var table = tables[0];
             resultView = table.DefaultView;
             resultFilters.Clear();
             ResultsGrid.ItemsSource = resultView;
-            ResultSummaryText.Text = $"  {table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms · Başlıklardaki alanlardan filtrele";
+            PrimaryResultsTab.Header = $"Sonuç 1 · {table.Rows.Count:N0} satır";
+            for (var tabIndex = ResultSetsTabs.Items.Count - 2; tabIndex >= 1; tabIndex--) ResultSetsTabs.Items.RemoveAt(tabIndex);
+            for (var index = 1; index < tables.Count; index++)
+            {
+                var extraTable = tables[index];
+                var extraGrid = CreateResultsGrid(extraTable.DefaultView);
+                ResultSetsTabs.Items.Insert(index, new TabItem { Header = $"Sonuç {index + 1} · {extraTable.Rows.Count:N0} satır", Content = extraGrid });
+            }
+            ResultSetsTabs.SelectedIndex = 0;
+            ResultSummaryText.Text = $"  {tables.Count} sonuç kümesi · {table.Rows.Count:N0} satır · Başlıklara tıklayarak toplam al";
             UpdateResultTotals();
             stopwatch.Stop();
             TimingText.Text = $"{table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms";
@@ -614,7 +631,60 @@ public partial class MainWindow
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => queryCancellation?.Cancel();
 
-    private void ResultsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
+    private DataGrid CreateResultsGrid(DataView view)
+    {
+        var grid = new DataGrid
+        {
+            ItemsSource = view,
+            AutoGenerateColumns = true,
+            IsReadOnly = true,
+            CanUserSortColumns = true,
+            CanUserResizeColumns = true,
+            CanUserReorderColumns = true,
+            SelectionMode = DataGridSelectionMode.Extended,
+            SelectionUnit = DataGridSelectionUnit.CellOrRowHeader,
+            ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
+            CanUserAddRows = false,
+            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
+            HeadersVisibility = DataGridHeadersVisibility.Column,
+            RowBackground = Brushes.White,
+            AlternatingRowBackground = new SolidColorBrush(Color.FromRgb(251, 252, 254)),
+            BorderThickness = new Thickness(0),
+            ColumnHeaderHeight = 62,
+            RowHeight = 30,
+            FontFamily = new FontFamily("Segoe UI"),
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(31, 41, 55))
+        };
+        grid.AutoGeneratingColumn += ResultsGrid_AutoGeneratingColumn;
+        grid.Sorting += ResultsGrid_Sorting;
+        return grid;
+    }
+
+    private void ResultsGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        if (sender is not DataGrid grid || e.Column.SortMemberPath is not string columnName || grid.ItemsSource is not DataView view) return;
+        if (view.Table is not DataTable table) return;
+        var column = table.Columns[columnName];
+        if (column is null) return;
+        var numericTypes = new[] { typeof(byte), typeof(short), typeof(int), typeof(long), typeof(float), typeof(double), typeof(decimal) };
+        if (!numericTypes.Contains(column.DataType))
+        {
+            ResultTotalsText.Text = $"{columnName}: sayısal toplam yok · {view.Count:N0} satır";
+            return;
+        }
+        decimal total = 0;
+        foreach (DataRowView row in view)
+        {
+            if (row.Row.IsNull(column)) continue;
+            try { total += Convert.ToDecimal(row.Row[column], System.Globalization.CultureInfo.InvariantCulture); }
+            catch (FormatException) { }
+            catch (InvalidCastException) { }
+        }
+        ResultTotalsText.Text = $"SUM({columnName}) = {total:N8}   ·   {view.Count:N0} hücre   ·   filtrelenmiş görünüm";
+    }
+
+    private void ResultsGrid_AutoGeneratingColumn(object? sender, DataGridAutoGeneratingColumnEventArgs e)
     {
         var columnName = e.PropertyName;
         var header = new FrameworkElementFactory(typeof(StackPanel));
