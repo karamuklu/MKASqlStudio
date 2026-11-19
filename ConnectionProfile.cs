@@ -7,12 +7,17 @@ namespace WindowsMssqlStudio;
 
 public sealed class ConnectionProfile
 {
-    public string Server { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Comment { get; set; } = "";
+    public string Host { get; set; } = "";
+    public string Instance { get; set; } = "";
+    public string Port { get; set; } = "";
+    public string Server { get => Host; set => Host = value; }
     public string Database { get; set; } = "";
     public bool WindowsAuthentication { get; set; }
     public string UserName { get; set; } = "";
     public string Password { get; set; } = "";
-    public string DisplayName => $"{Server} · {Database}";
+    public string DisplayName => $"{(string.IsNullOrWhiteSpace(Name) ? Host : Name)} · {Database}";
 }
 
 public static class ConnectionProfileStore
@@ -28,6 +33,11 @@ public static class ConnectionProfileStore
             return protectedProfiles.Select(profile => new ConnectionProfile
             {
                 Server = profile.Server,
+                Name = profile.Name,
+                Comment = profile.Comment,
+                Host = string.IsNullOrWhiteSpace(profile.Host) ? profile.Server : profile.Host,
+                Instance = profile.Instance,
+                Port = profile.Port,
                 Database = profile.Database,
                 WindowsAuthentication = profile.WindowsAuthentication,
                 UserName = profile.UserName,
@@ -51,6 +61,11 @@ public static class ConnectionProfileStore
         var stored = profiles.Select(item => new StoredConnectionProfile
         {
             Server = item.Server,
+            Name = item.Name,
+            Comment = item.Comment,
+            Host = item.Host,
+            Instance = item.Instance,
+            Port = item.Port,
             Database = item.Database,
             WindowsAuthentication = item.WindowsAuthentication,
             UserName = item.UserName,
@@ -82,6 +97,11 @@ public static class ConnectionProfileStore
 
     private sealed class StoredConnectionProfile
     {
+        public string Name { get; set; } = "";
+        public string Comment { get; set; } = "";
+        public string Host { get; set; } = "";
+        public string Instance { get; set; } = "";
+        public string Port { get; set; } = "";
         public string Server { get; set; } = "";
         public string Database { get; set; } = "";
         public bool WindowsAuthentication { get; set; }
