@@ -7,7 +7,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Text.Json;
-using System.Windows.Documents;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
@@ -16,6 +15,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using System.Reflection;
 using Microsoft.Data.SqlClient;
+using ICSharpCode.AvalonEdit.Highlighting;
 
 namespace WindowsMssqlStudio;
 
@@ -27,7 +27,7 @@ public partial class MainWindow
     private bool changingDatabase;
     private CancellationTokenSource? queryCancellation;
     private bool suppressEditorChanges;
-    private readonly DispatcherTimer syntaxHighlightTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
+    private bool insertingAutomaticAlias;
     private TabItem? activeQueryTab;
     private int queryNumber = 1;
     private readonly HashSet<string> completionSymbols = new(StringComparer.OrdinalIgnoreCase);
@@ -46,20 +46,20 @@ public partial class MainWindow
         SchemaTree.AddHandler(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(SchemaTree_ContextMenuOpening));
         SchemaTree.MouseDoubleClick += SchemaTree_MouseDoubleClick;
         IntelliSensePopup.PlacementTarget = SqlEditor;
+        SqlEditor.SyntaxHighlighting = HighlightingManager.Instance.GetDefinition("SQL");
         VersionText.Text = $"v{AppVersion} · SQL Server çalışma alanı";
+        HeaderVersionText.Text = $"v{AppVersion}";
+        UpdateButton.Content = $"v{AppVersion}  Güncelle";
         FooterVersionText.Text = $"MKA SQL Studio · Windows · v{AppVersion}";
         ResultsGrid.RowHeight = 28;
         ResultsGrid.EnableRowVirtualization = true;
         ResultsGrid.EnableColumnVirtualization = true;
-        syntaxHighlightTimer.Tick += SyntaxHighlightTimer_Tick;
         Loaded += MainWindow_Loaded;
     }
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
-        foreach (var button in FindVisualChildren<Button>(this))
-            if (string.Equals(button.Content?.ToString(), "Güncelle", StringComparison.Ordinal)) button.Content = $"v{AppVersion}  Güncelle";
         Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
         {
             SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
@@ -270,17 +270,33 @@ public partial class MainWindow
         if (item is null || item.Tag is not ExplorerNode node) { e.Handled = true; return; }
         item.IsSelected = true;
         var menu = new ContextMenu();
-        if (node.Kind is "Table" or "View" or "Procedure" or "Function")
+        if (node.Kind is "Table" or "View")
         {
-            menu.Items.Add(CreateContextMenuItem("Aç", async (_, _) => await OpenObjectAsync(node)));
-            if (node.Kind is "Table" or "View") menu.Items.Add(CreateContextMenuItem("İlk 1000 satırı seç", async (_, _) => await OpenSelectQueryAsync(node)));
-            if (node.Kind is "Procedure" or "Function") menu.Items.Add(CreateContextMenuItem("Tanımı düzenle", async (_, _) => await OpenDefinitionQueryAsync(node)));
+            menu.Items.Add(CreateContextMenuItem(node.Kind == "View" ? "New View..." : "Aç", async (_, _) => await OpenObjectAsync(node)));
+            menu.Items.Add(CreateContextMenuItem("Design", (_, _) => ShowObjectMessage(node, "Tasarım ekranı sonraki adımda açılacak.")));
+            menu.Items.Add(CreateContextMenuItem("Select Top 1000 Rows", async (_, _) => await OpenSelectQueryAsync(node)));
+            menu.Items.Add(CreateContextMenuItem("Edit Top 200 Rows", async (_, _) => await OpenSelectQueryAsync(node)));
+            menu.Items.Add(CreateContextMenuItem("View Dependencies", (_, _) => ShowObjectMessage(node, "Bağımlılık görünümü hazırlanıyor.")));
+            menu.Items.Add(new Separator());
+            menu.Items.Add(CreateContextMenuItem("Script as", (_, _) => ShowObjectMessage(node, "Script seçenekleri hazırlanıyor.")));
+            menu.Items.Add(CreateContextMenuItem("Properties", (_, _) => ShowObjectMessage(node, $"{node.Schema}.{node.Name}")));
+            menu.Items.Add(new Separator());
+        }
+        else if (node.Kind is "Procedure" or "Function")
+        {
+            menu.Items.Add(CreateContextMenuItem("Execute", async (_, _) => await OpenDefinitionQueryAsync(node)));
+            menu.Items.Add(CreateContextMenuItem("Modify", async (_, _) => await OpenDefinitionQueryAsync(node)));
+            menu.Items.Add(CreateContextMenuItem("Script as", (_, _) => ShowObjectMessage(node, "Script seçenekleri hazırlanıyor.")));
+            menu.Items.Add(new Separator());
+            menu.Items.Add(CreateContextMenuItem("Properties", (_, _) => ShowObjectMessage(node, $"{node.Schema}.{node.Name}")));
             menu.Items.Add(new Separator());
         }
         menu.Items.Add(CreateContextMenuItem("Adı kopyala", (_, _) => Clipboard.SetText($"[{node.Schema}].[{node.Name}]")));
         menu.Items.Add(CreateContextMenuItem("Şemayı yenile", async (_, _) => await RefreshSchemaFromContextAsync()));
         item.ContextMenu = menu;
     }
+
+    private void ShowObjectMessage(ExplorerNode node, string message) => MessageBox.Show(this, message, $"{node.Schema}.{node.Name}", MessageBoxButton.OK, MessageBoxImage.Information);
 
     private void SchemaTree_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -374,34 +390,29 @@ public partial class MainWindow
         }
     }
 
-    private void SqlEditor_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void SqlEditor_TextChanged(object? sender, EventArgs e)
     {
         if (suppressEditorChanges) return;
         var text = GetEditorText();
-        UpdateLineNumbers(text);
         var caret = GetCaretOffset();
         var beforeCaret = text[..Math.Min(caret, text.Length)];
+        TryInsertAutomaticAlias(beforeCaret, caret);
+        if (insertingAutomaticAlias) return;
         var shouldSuggest = beforeCaret.EndsWith(".", StringComparison.Ordinal) || Regex.IsMatch(beforeCaret, @"[A-Za-z_]\w{1,}$");
         ShowIntelliSense(shouldSuggest);
-        syntaxHighlightTimer.Stop();
-        syntaxHighlightTimer.Start();
     }
 
-    private void SqlEditor_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    private void TryInsertAutomaticAlias(string beforeCaret, int caret)
     {
-        LineNumbers.Margin = new Thickness(0, 14 - e.VerticalOffset, 11, 0);
-    }
-
-    private void UpdateLineNumbers(string text)
-    {
-        var lineCount = Math.Max(1, text.Count(character => character == '\n') + 1);
-        LineNumbers.Text = string.Join(Environment.NewLine, Enumerable.Range(1, lineCount));
-    }
-
-    private void SyntaxHighlightTimer_Tick(object? sender, EventArgs e)
-    {
-        syntaxHighlightTimer.Stop();
-        ApplySyntaxHighlighting(GetEditorText());
+        if (insertingAutomaticAlias || caret != GetEditorText().Length || !beforeCaret.EndsWith(" ", StringComparison.Ordinal)) return;
+        var match = Regex.Match(beforeCaret, @"\b(?:FROM|JOIN)\s+(?:(?:[A-Za-z_]\w*)\.)?(?<table>[A-Za-z_]\w*)\s$", RegexOptions.IgnoreCase);
+        if (!match.Success || !tableNames.Contains(match.Groups["table"].Value)) return;
+        var table = match.Groups["table"].Value;
+        var alias = table[..1].ToLowerInvariant();
+        insertingAutomaticAlias = true;
+        SqlEditor.Document.Insert(caret, alias + " ");
+        SqlEditor.CaretOffset = caret + alias.Length + 1;
+        insertingAutomaticAlias = false;
     }
 
     private void SqlEditor_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -450,7 +461,7 @@ public partial class MainWindow
         IntelliSenseList.SelectedIndex = candidates.Count == 0 ? -1 : 0;
         if (candidates.Count > 0)
         {
-            var caretRect = SqlEditor.CaretPosition.GetCharacterRect(LogicalDirection.Forward);
+            var caretRect = SqlEditor.TextArea.Caret.CalculateCaretRectangle();
             IntelliSensePopup.Placement = PlacementMode.Relative;
             IntelliSensePopup.HorizontalOffset = Math.Max(0, caretRect.X);
             IntelliSensePopup.VerticalOffset = Math.Max(0, caretRect.Bottom);
@@ -487,109 +498,38 @@ public partial class MainWindow
         var start = caret - 1;
         while (start >= 0 && (char.IsLetterOrDigit(editorText[start]) || editorText[start] is '_' or '#' or '@')) start--;
         suppressEditorChanges = true;
-        var selectionStart = GetTextPointerAtOffset(start + 1);
-        var selectionEnd = GetTextPointerAtOffset(caret);
-        SqlEditor.Selection.Select(selectionStart, selectionEnd);
-        SqlEditor.Selection.Text = selected.InsertText;
-        SqlEditor.CaretPosition = GetTextPointerAtOffset(start + 1 + selected.InsertText.Length);
+        SqlEditor.Select(start + 1, caret - start - 1);
+        SqlEditor.SelectedText = selected.InsertText;
+        SqlEditor.CaretOffset = start + 1 + selected.InsertText.Length;
         suppressEditorChanges = false;
-        ApplySyntaxHighlighting(GetEditorText());
         IntelliSensePopup.IsOpen = false;
     }
 
-    private string GetEditorText() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd).Text.TrimEnd('\r', '\n');
+    private string GetEditorText() => SqlEditor.Text;
 
     private void SetEditorText(string text)
     {
         suppressEditorChanges = true;
-        SqlEditor.Document.Blocks.Clear();
-        SqlEditor.Document.Blocks.Add(new Paragraph(new Run(text)) { Margin = new Thickness(0) });
-        SqlEditor.CaretPosition = SqlEditor.Document.ContentEnd;
+        SqlEditor.Text = text;
+        SqlEditor.CaretOffset = SqlEditor.Text.Length;
         suppressEditorChanges = false;
-        ApplySyntaxHighlighting(text);
-        UpdateLineNumbers(text);
     }
 
-    private int GetCaretOffset() => new TextRange(SqlEditor.Document.ContentStart, SqlEditor.CaretPosition).Text.Length;
-
-    private int GetTextOffset(TextPointer pointer) => new TextRange(SqlEditor.Document.ContentStart, pointer).Text.Length;
-
-    private TextPointer GetTextPointerAtOffset(int offset)
-    {
-        var pointer = SqlEditor.Document.ContentStart;
-        var remaining = Math.Max(0, offset);
-        while (pointer is not null)
-        {
-            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.Text)
-            {
-                var run = pointer.GetTextInRun(LogicalDirection.Forward);
-                if (remaining <= run.Length) return pointer.GetPositionAtOffset(remaining, LogicalDirection.Forward) ?? SqlEditor.Document.ContentEnd;
-                remaining -= run.Length;
-                pointer = pointer.GetPositionAtOffset(run.Length, LogicalDirection.Forward);
-                continue;
-            }
-
-            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.ElementEnd && pointer.Parent is Paragraph)
-            {
-                if (remaining <= 2) return pointer;
-                remaining -= 2;
-            }
-            pointer = pointer.GetNextContextPosition(LogicalDirection.Forward);
-        }
-        return SqlEditor.Document.ContentEnd;
-    }
-
-    private void ApplySyntaxHighlighting(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return;
-        if (suppressEditorChanges) return;
-        var caretOffset = GetCaretOffset();
-        var selectionStartOffset = GetTextOffset(SqlEditor.Selection.Start);
-        var selectionEndOffset = GetTextOffset(SqlEditor.Selection.End);
-        suppressEditorChanges = true;
-        try
-        {
-            var all = new TextRange(SqlEditor.Document.ContentStart, SqlEditor.Document.ContentEnd);
-            all.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(Color.FromRgb(31, 41, 55)));
-            ApplyMatches(text, @"--[^\r\n]*|/\*[\s\S]*?\*/", Color.FromRgb(22, 126, 80), FontStyles.Italic);
-            ApplyMatches(text, @"'(?:''|[^'])*'|""(?:""""|[^""])*""", Color.FromRgb(180, 83, 9), FontStyles.Normal);
-            ApplyMatches(text, $@"\b({string.Join("|", sqlKeywords.Select(Regex.Escape))})\b", Color.FromRgb(37, 99, 235), FontStyles.Normal, FontWeights.SemiBold);
-        }
-        finally
-        {
-            suppressEditorChanges = false;
-            var selectionStart = GetTextPointerAtOffset(selectionStartOffset);
-            var selectionEnd = GetTextPointerAtOffset(selectionEndOffset);
-            SqlEditor.Selection.Select(selectionStart, selectionEnd);
-            SqlEditor.CaretPosition = GetTextPointerAtOffset(caretOffset);
-        }
-    }
-
-    private void ApplyMatches(string text, string pattern, Color color, FontStyle style, FontWeight? weight = null)
-    {
-        foreach (Match match in Regex.Matches(text, pattern, RegexOptions.IgnoreCase))
-        {
-            var range = new TextRange(GetTextPointerAtOffset(match.Index), GetTextPointerAtOffset(match.Index + match.Length));
-            range.ApplyPropertyValue(TextElement.ForegroundProperty, new SolidColorBrush(color));
-            range.ApplyPropertyValue(TextElement.FontStyleProperty, style);
-            if (weight is not null) range.ApplyPropertyValue(TextElement.FontWeightProperty, weight.Value);
-        }
-    }
+    private int GetCaretOffset() => SqlEditor.CaretOffset;
 
     private void InsertPair(string pair)
     {
         suppressEditorChanges = true;
-        SqlEditor.Selection.Text = pair;
-        var caret = GetCaretOffset() - 1;
-        SqlEditor.CaretPosition = GetTextPointerAtOffset(caret);
+        var start = SqlEditor.SelectionStart;
+        SqlEditor.SelectedText = pair;
+        SqlEditor.CaretOffset = start + 1;
         suppressEditorChanges = false;
-        ApplySyntaxHighlighting(GetEditorText());
     }
 
     private async void Execute_Click(object sender, RoutedEventArgs e)
     {
         if (connection is null) { MessageBox.Show(this, "Önce bir SQL Server bağlantısı kurun.", "Bağlantı gerekli"); return; }
-        var sql = SqlEditor.Selection.Text.Length > 0 ? SqlEditor.Selection.Text : GetEditorText();
+        var sql = SqlEditor.SelectedText.Length > 0 ? SqlEditor.SelectedText : GetEditorText();
         if (string.IsNullOrWhiteSpace(sql)) return;
         queryCancellation?.Cancel();
         queryCancellation = new CancellationTokenSource();
@@ -752,5 +692,6 @@ public partial class MainWindow
     private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, $"MKA SQL Studio\nWindows MSSQL çalışma alanı\nSürüm v{AppVersion}", "Hakkında");
     private void ShowError(string title, Exception ex) { MessagesBox.Text = ex.Message; MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error); }
 }
+
 
 
