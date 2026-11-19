@@ -558,7 +558,7 @@ public partial class MainWindow
             await using var command = new SqlCommand(sql, connection) { CommandTimeout = 60 };
             await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
             var dataSet = new DataSet();
-            dataSet.Load(reader, LoadOption.Upsert, Array.Empty<string>());
+            dataSet.Load(reader, LoadOption.Upsert, Enumerable.Range(1, 64).Select(index => $"Result{index}").ToArray());
             var tables = dataSet.Tables.Cast<DataTable>().Where(table => table.Columns.Count > 0).ToList();
             if (tables.Count == 0) { MessagesBox.Text = "Sorgu sonuç döndürmedi."; StatusText.Text = "Hazır"; return; }
 
