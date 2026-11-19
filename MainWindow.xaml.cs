@@ -435,9 +435,10 @@ public partial class MainWindow
     private void TryInsertAutomaticAlias(string beforeCaret, int caret)
     {
         if (insertingAutomaticAlias || caret != GetEditorText().Length || !beforeCaret.EndsWith(" ", StringComparison.Ordinal)) return;
-        var match = Regex.Match(beforeCaret, @"\b(?:FROM|JOIN)\s+(?:(?:[A-Za-z_]\w*)\.)?(?<table>[A-Za-z_]\w*)\s$", RegexOptions.IgnoreCase);
-        if (!match.Success || !tableNames.Contains(match.Groups["table"].Value)) return;
-        var table = match.Groups["table"].Value;
+        var match = Regex.Match(beforeCaret, @"\b(?:FROM|JOIN)\s+(?:(?:\[[^\]]+\]|[A-Za-z_]\w*)\.)?(?<table>\[[^\]]+\]|[A-Za-z_]\w*)\s$", RegexOptions.IgnoreCase);
+        if (!match.Success) return;
+        var table = UnquoteIdentifier(match.Groups["table"].Value);
+        if (!tableNames.Contains(table)) return;
         var alias = table[..1].ToLowerInvariant();
         insertingAutomaticAlias = true;
         SqlEditor.Document.Insert(caret, alias + " ");
@@ -506,16 +507,18 @@ public partial class MainWindow
     private Dictionary<string, string> GetTableAliases(string text)
     {
         var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match match in Regex.Matches(text, @"\b(?:FROM|JOIN)\s+(?:(?<schema>[A-Za-z_]\w*)\.)?(?<table>[A-Za-z_]\w*)(?:\s+(?:AS\s+)?(?<alias>[A-Za-z_]\w*))?", RegexOptions.IgnoreCase))
+        foreach (Match match in Regex.Matches(text, @"\b(?:FROM|JOIN)\s+(?:(?<schema>\[[^\]]+\]|[A-Za-z_]\w*)\.)?(?<table>\[[^\]]+\]|[A-Za-z_]\w*)(?:\s+(?:AS\s+)?(?<alias>[A-Za-z_]\w*))?", RegexOptions.IgnoreCase))
         {
-            var table = match.Groups["table"].Value;
-            var schema = match.Groups["schema"].Value;
+            var table = UnquoteIdentifier(match.Groups["table"].Value);
+            var schema = UnquoteIdentifier(match.Groups["schema"].Value);
             var alias = match.Groups["alias"].Value;
             if (string.IsNullOrWhiteSpace(alias) || sqlKeywords.Contains(alias, StringComparer.OrdinalIgnoreCase)) alias = table[..1].ToLowerInvariant();
             aliases[alias] = string.IsNullOrWhiteSpace(schema) ? table : $"{schema}.{table}";
         }
         return aliases;
     }
+
+    private static string UnquoteIdentifier(string value) => value.Trim().Trim('[', ']');
 
     private void MoveCompletion(int offset)
     {
