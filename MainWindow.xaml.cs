@@ -48,7 +48,8 @@ public partial class MainWindow
         SchemaTree.AddHandler(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(SchemaTree_ContextMenuOpening));
         SchemaTree.MouseDoubleClick += SchemaTree_MouseDoubleClick;
         IntelliSensePopup.PlacementTarget = SqlEditor;
-        ConfigureSqlHighlighting();
+        try { ConfigureSqlHighlighting(); }
+        catch { SqlEditor.SyntaxHighlighting = HighlightingManager.Instance.GetDefinition("C#"); }
         VersionText.Text = $"v{AppVersion} · SQL Server çalışma alanı";
         HeaderVersionText.Text = $"v{AppVersion}";
         UpdateButton.Content = $"v{AppVersion}  Güncelle";
@@ -575,6 +576,7 @@ public partial class MainWindow
             resultView = table.DefaultView;
             resultFilters.Clear();
             ResultsGrid.ItemsSource = resultView;
+            ResultSummaryText.Text = $"  {table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms · Başlıklardaki alanlardan filtrele";
             stopwatch.Stop();
             TimingText.Text = $"{table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms";
             MessagesBox.Text = "Sorgu başarıyla tamamlandı.";
@@ -635,6 +637,7 @@ public partial class MainWindow
     {
         resultFilters.Clear();
         if (resultView is not null) resultView.RowFilter = string.Empty;
+        ResultSummaryText.Text = resultView is null ? "  Sorgu sonucu" : $"  {resultView.Count:N0} satır · Filtre yok";
         foreach (var filter in FindVisualChildren<TextBox>(ResultsGrid))
             if (filter.Tag is string) filter.Clear();
     }
@@ -697,7 +700,7 @@ public partial class MainWindow
             using var client = new HttpClient();
             client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MKASqlStudio", AppVersion));
             var localVersion = Version.Parse(AppVersion);
-            using var versionResponse = await client.GetAsync("https://raw.githubusercontent.com/karamuklu/MKASqlStudio/main/version.json");
+            using var versionResponse = await client.GetAsync($"https://raw.githubusercontent.com/karamuklu/MKASqlStudio/main/version.json?ts={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}");
             Version? remoteVersion = null;
             if (versionResponse.IsSuccessStatusCode)
             {
