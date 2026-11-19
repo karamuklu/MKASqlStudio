@@ -13,15 +13,15 @@ public partial class ConnectionDialog
     public ConnectionDialog()
     {
         InitializeComponent();
-        SavedConnectionsBox.ItemsSource = ConnectionProfileStore.Load();
+        SavedConnectionsList.ItemsSource = ConnectionProfileStore.Load();
         UpdateCredentialsState();
     }
 
     private void AuthBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => UpdateCredentialsState();
 
-    private void SavedConnectionsBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void SavedConnectionsList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (SavedConnectionsBox.SelectedItem is not ConnectionProfile profile) return;
+        if (SavedConnectionsList.SelectedItem is not ConnectionProfile profile) return;
         NameBox.Text = profile.Name;
         CommentBox.Text = profile.Comment;
         HostBox.Text = profile.Host;
