@@ -17,6 +17,17 @@
     <Style TargetType="TextBox"><Setter Property="Foreground" Value="{StaticResource Ink}" /><Setter Property="BorderBrush" Value="{StaticResource Line}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="Padding" Value="9,7" /></Style>
     <Style TargetType="TreeViewItem"><Setter Property="Padding" Value="4,5" /><Setter Property="Foreground" Value="#344054" /><Setter Property="FontSize" Value="12" /></Style>
     <Style TargetType="TabItem"><Setter Property="Padding" Value="14,8" /><Setter Property="Foreground" Value="#667085" /></Style>
+    <Style TargetType="DataGridColumnHeader">
+      <Setter Property="Background" Value="#F7F9FC" /><Setter Property="Foreground" Value="#344054" />
+      <Setter Property="FontWeight" Value="SemiBold" /><Setter Property="FontSize" Value="11" />
+      <Setter Property="BorderBrush" Value="#E4E9F1" /><Setter Property="BorderThickness" Value="0,0,1,1" />
+      <Setter Property="Padding" Value="8,5" />
+    </Style>
+    <Style TargetType="DataGridRow">
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="BorderBrush" Value="#EEF1F5" /><Setter Property="BorderThickness" Value="0,0,0,1" />
+      <Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#EEF5FF" /></Trigger><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#DCEBFF" /><Setter Property="Foreground" Value="#123B73" /></Trigger></Style.Triggers>
+    </Style>
   </Window.Resources>
   <DockPanel>
     <Border DockPanel.Dock="Top" Background="#111C33" Padding="18,13"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal"><Border Background="#2563EB" CornerRadius="7" Padding="9,6" Margin="0,0,11,0"><TextBlock Text="M" Foreground="White" FontWeight="Bold" FontSize="16" /></Border><StackPanel><TextBlock Text="MKA SQL Studio" Foreground="White" FontSize="16" FontWeight="SemiBold" /><TextBlock x:Name="VersionText" Text="v0.5.0 · SQL Server çalışma alanı" Foreground="#9DB2D2" FontSize="10" /></StackPanel></StackPanel><TextBlock Grid.Column="1" x:Name="TopConnectionText" Text="  Bağlantı yok" Foreground="#B6C6DF" VerticalAlignment="Center" Margin="30,0,0,0" /><StackPanel Grid.Column="2" Orientation="Horizontal"><TextBlock x:Name="HeaderVersionText" Text="v0.5.0" Foreground="#9DB2D2" FontSize="11" VerticalAlignment="Center" Margin="0,0,10,0" /><Button x:Name="UpdateButton" Content="Güncelle" Click="CheckForUpdates_Click" Background="#1E3154" Foreground="White" BorderBrush="#38527D" /><Button Content="Hakkında" Click="About_Click" Background="Transparent" Foreground="#C9D6EB" BorderBrush="#38527D" /></StackPanel></Grid></Border>
@@ -29,7 +40,25 @@
       <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="7" /><RowDefinition Height="270" /></Grid.RowDefinitions>
         <Border Grid.Row="0" Background="#FFFFFF" BorderBrush="#DCE4EF" BorderThickness="1,1,1,0" CornerRadius="9,9,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TabControl x:Name="QueryTabs" SelectionChanged="QueryTabs_SelectionChanged" BorderThickness="0" Background="Transparent"><TabItem Header="●  SQLQuery1.sql" /></TabControl><TextBlock Grid.Column="1" Text="Ctrl+Space  IntelliSense" Foreground="#98A2B3" FontSize="11" VerticalAlignment="Center" Margin="0,0,14,0" /></Grid></Border>
         <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#D0D7E2" BorderThickness="1,0,1,1" CornerRadius="0,0,9,9"><Grid><avalonedit:TextEditor x:Name="SqlEditor" FontFamily="Cascadia Code,Consolas" FontSize="14" Foreground="#182230" Background="#FFFFFF" BorderThickness="0" Padding="8,5,8,8" ShowLineNumbers="True" LineNumbersForeground="#7B8798" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" TextChanged="SqlEditor_TextChanged" PreviewKeyDown="SqlEditor_PreviewKeyDown" KeyDown="SqlEditor_KeyDown" /><Popup x:Name="IntelliSensePopup" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"><Border Background="#FFFFFF" BorderBrush="#9DB7DD" BorderThickness="1" CornerRadius="5" Width="330" MaxHeight="300" Padding="2"><ListBox x:Name="IntelliSenseList" BorderThickness="0" DisplayMemberPath="Display" KeyboardNavigation.TabNavigation="Cycle" /></Border></Popup></Grid></Border>
-        <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#DCE4EF" /><Border Grid.Row="3" Background="#FFFFFF" BorderBrush="#DCE4EF" BorderThickness="1" CornerRadius="9"><TabControl BorderThickness="0"><TabItem Header="Results"><DataGrid x:Name="ResultsGrid" AutoGenerateColumns="True" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" IsReadOnly="True" CanUserSortColumns="True" CanUserResizeColumns="True" CanUserReorderColumns="True" SelectionMode="Extended" SelectionUnit="FullRow" ClipboardCopyMode="IncludeHeader" CanUserAddRows="False" GridLinesVisibility="Horizontal" HeadersVisibility="Column" RowBackground="#FFFFFF" AlternatingRowBackground="#F8FAFC" BorderThickness="0" ColumnHeaderHeight="58" RowHeight="28" FontFamily="Segoe UI" FontSize="12" Foreground="#1F2937"><DataGrid.ContextMenu><ContextMenu><MenuItem Header="Seçili satırları kopyala" Click="CopyResults_Click" /><MenuItem Header="Filtreleri temizle" Click="ClearResultFilters_Click" /></ContextMenu></DataGrid.ContextMenu></DataGrid></TabItem><TabItem Header="Mesajlar"><TextBox x:Name="MessagesBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="14" BorderThickness="0" /></TabItem></TabControl></Border>
+        <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#DCE4EF" />
+        <Border Grid.Row="3" Background="#FFFFFF" BorderBrush="#DCE4EF" BorderThickness="1" CornerRadius="9">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="42" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="#F7F9FC" BorderBrush="#E4E9F1" BorderThickness="0,0,0,1" Padding="10,0">
+              <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                  <Button Content="⧉ Kopyala" Click="CopyResults_Click" Padding="10,4" />
+                  <Button Content="⌫ Filtreleri temizle" Click="ClearResultFilters_Click" Padding="10,4" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="Results" FontWeight="SemiBold" Foreground="#172033" /><TextBlock x:Name="ResultSummaryText" Text="  Sorgu sonucu" Foreground="#667085" Margin="12,0,0,0" /></StackPanel>
+              </DockPanel>
+            </Border>
+            <TabControl Grid.Row="1" BorderThickness="0">
+              <TabItem Header="Veri"><DataGrid x:Name="ResultsGrid" AutoGenerateColumns="True" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" IsReadOnly="True" CanUserSortColumns="True" CanUserResizeColumns="True" CanUserReorderColumns="True" SelectionMode="Extended" SelectionUnit="FullRow" ClipboardCopyMode="IncludeHeader" CanUserAddRows="False" GridLinesVisibility="Horizontal" HeadersVisibility="Column" RowBackground="#FFFFFF" AlternatingRowBackground="#FBFCFE" BorderThickness="0" ColumnHeaderHeight="62" RowHeight="30" FontFamily="Segoe UI" FontSize="12" Foreground="#1F2937"><DataGrid.ContextMenu><ContextMenu><MenuItem Header="Seçili satırları kopyala" Click="CopyResults_Click" /><MenuItem Header="Filtreleri temizle" Click="ClearResultFilters_Click" /></ContextMenu></DataGrid.ContextMenu></DataGrid></TabItem>
+              <TabItem Header="Mesajlar"><TextBox x:Name="MessagesBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="14" BorderThickness="0" /></TabItem>
+            </TabControl>
+          </Grid>
+        </Border>
       </Grid>
     </Grid>
   </DockPanel>
