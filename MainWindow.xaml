@@ -43,7 +43,7 @@
         <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#DCE4EF" />
         <Border Grid.Row="3" Background="#FFFFFF" BorderBrush="#DCE4EF" BorderThickness="1" CornerRadius="9">
           <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="42" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="42" /><RowDefinition Height="*" /><RowDefinition Height="34" /></Grid.RowDefinitions>
             <Border Grid.Row="0" Background="#F7F9FC" BorderBrush="#E4E9F1" BorderThickness="0,0,0,1" Padding="10,0">
               <DockPanel LastChildFill="True">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
@@ -57,6 +57,7 @@
               <TabItem Header="Veri"><DataGrid x:Name="ResultsGrid" AutoGenerateColumns="True" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" IsReadOnly="True" CanUserSortColumns="True" CanUserResizeColumns="True" CanUserReorderColumns="True" SelectionMode="Extended" SelectionUnit="FullRow" ClipboardCopyMode="IncludeHeader" CanUserAddRows="False" GridLinesVisibility="Horizontal" HeadersVisibility="Column" RowBackground="#FFFFFF" AlternatingRowBackground="#FBFCFE" BorderThickness="0" ColumnHeaderHeight="62" RowHeight="30" FontFamily="Segoe UI" FontSize="12" Foreground="#1F2937"><DataGrid.ContextMenu><ContextMenu><MenuItem Header="Seçili satırları kopyala" Click="CopyResults_Click" /><MenuItem Header="Filtreleri temizle" Click="ClearResultFilters_Click" /></ContextMenu></DataGrid.ContextMenu></DataGrid></TabItem>
               <TabItem Header="Mesajlar"><TextBox x:Name="MessagesBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="14" BorderThickness="0" /></TabItem>
             </TabControl>
+            <Border Grid.Row="2" Background="#F7F9FC" BorderBrush="#E4E9F1" BorderThickness="0,1,0,0" Padding="10,0"><TextBlock x:Name="ResultTotalsText" Text="Toplamlar: —" Foreground="#667085" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" /></Border>
           </Grid>
         </Border>
       </Grid>
