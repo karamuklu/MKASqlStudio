@@ -25,8 +25,6 @@ public partial class MainWindow
 {
     private static string AppVersion => Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.3.0";
     private SqlConnection? connection;
-    private string? serverConnectionString;
-    private bool changingDatabase;
     private CancellationTokenSource? queryCancellation;
     private bool suppressEditorChanges;
     private bool insertingAutomaticAlias;
@@ -109,10 +107,7 @@ public partial class MainWindow
             connection?.Dispose();
             connection = new SqlConnection(dialog.ConnectionString);
             await connection.OpenAsync();
-            var serverBuilder = new SqlConnectionStringBuilder(dialog.ConnectionString) { InitialCatalog = "master" };
-            serverConnectionString = serverBuilder.ConnectionString;
             if (dialog.SelectedProfile is not null) ConnectionProfileStore.Save(dialog.SelectedProfile);
-            await LoadDatabaseSelectorAsync(dialog.SelectedDatabase);
             ConnectionLabel.Text = connection.DataSource + $"\n{(dialog.SelectedDatabase ?? "Sunucu")}";
             TopConnectionText.Text = $"  {connection.DataSource} · {(dialog.SelectedDatabase ?? "Sunucu")}";
             StatusText.Text = "Bağlandı";
@@ -146,49 +141,6 @@ public partial class MainWindow
         AddExpandable(database, "Synonyms", "Synonyms");
         AddExpandable(database, "Security", "Security");
         SchemaTree.Items.Add(database);
-    }
-
-    private async Task LoadDatabaseSelectorAsync(string? selectedDatabase)
-    {
-        if (connection is null) return;
-        changingDatabase = true;
-        try
-        {
-            DatabaseSelector.Items.Clear();
-            await using var command = new SqlCommand("SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' ORDER BY name", connection);
-            await using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync()) DatabaseSelector.Items.Add(reader.GetString(0));
-            DatabaseSelector.IsEnabled = DatabaseSelector.Items.Count > 0;
-            if (selectedDatabase is not null) DatabaseSelector.SelectedItem = selectedDatabase;
-            else if (DatabaseSelector.Items.Count > 0) DatabaseSelector.SelectedIndex = 0;
-        }
-        finally { changingDatabase = false; }
-        if (selectedDatabase is null && DatabaseSelector.SelectedItem is string database) await SwitchDatabaseAsync(database);
-    }
-
-    private async void DatabaseSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (changingDatabase || DatabaseSelector.SelectedItem is not string database || string.IsNullOrWhiteSpace(serverConnectionString)) return;
-        await SwitchDatabaseAsync(database);
-    }
-
-    private async Task SwitchDatabaseAsync(string database)
-    {
-        if (string.IsNullOrWhiteSpace(serverConnectionString)) return;
-        try
-        {
-            changingDatabase = true;
-            var builder = new SqlConnectionStringBuilder(serverConnectionString) { InitialCatalog = database };
-            connection?.Dispose();
-            connection = new SqlConnection(builder.ConnectionString);
-            await connection.OpenAsync();
-            ConnectionLabel.Text = connection.DataSource + $"\n{database}";
-            TopConnectionText.Text = $"  {connection.DataSource} · {database}";
-            await LoadSchemaAsync();
-            StatusText.Text = "Veritabanı seçildi";
-        }
-        catch (Exception ex) { ShowError("Veritabanına geçilemedi", ex); }
-        finally { changingDatabase = false; }
     }
 
     private async Task LoadTableColumnsAsync()
@@ -300,7 +252,13 @@ public partial class MainWindow
         if (item is null || item.Tag is not ExplorerNode node) { e.Handled = true; return; }
         item.IsSelected = true;
         var menu = new ContextMenu();
-        if (node.Kind is "Table" or "View")
+        if (node.Kind == "Database")
+        {
+            menu.Items.Add(CreateContextMenuItem("Şemayı yenile", async (_, _) => await RefreshSchemaFromContextAsync()));
+            menu.Items.Add(CreateContextMenuItem("Bağlantıyı kes", (_, _) => Disconnect_Click(this, new RoutedEventArgs())));
+            menu.Items.Add(new Separator());
+        }
+        else if (node.Kind is "Table" or "View")
         {
             menu.Items.Add(CreateContextMenuItem(node.Kind == "View" ? "New View..." : "Aç", async (_, _) => await OpenObjectAsync(node)));
             menu.Items.Add(CreateContextMenuItem("Design", (_, _) => ShowObjectMessage(node, "Tasarım ekranı sonraki adımda açılacak.")));
@@ -321,8 +279,11 @@ public partial class MainWindow
             menu.Items.Add(CreateContextMenuItem("Properties", (_, _) => ShowObjectMessage(node, $"{node.Schema}.{node.Name}")));
             menu.Items.Add(new Separator());
         }
-        menu.Items.Add(CreateContextMenuItem("Adı kopyala", (_, _) => Clipboard.SetText($"[{node.Schema}].[{node.Name}]")));
-        menu.Items.Add(CreateContextMenuItem("Şemayı yenile", async (_, _) => await RefreshSchemaFromContextAsync()));
+        if (node.Kind != "Database")
+        {
+            menu.Items.Add(CreateContextMenuItem("Adı kopyala", (_, _) => Clipboard.SetText($"[{node.Schema}].[{node.Name}]")));
+            menu.Items.Add(CreateContextMenuItem("Şemayı yenile", async (_, _) => await RefreshSchemaFromContextAsync()));
+        }
         item.ContextMenu = menu;
     }
 
@@ -596,13 +557,9 @@ public partial class MainWindow
             StatusText.Text = "Çalışıyor...";
             await using var command = new SqlCommand(sql, connection) { CommandTimeout = 60 };
             await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
-            var tables = new List<DataTable>();
-            do
-            {
-                var resultTable = new DataTable();
-                resultTable.Load(reader);
-                if (resultTable.Columns.Count > 0) tables.Add(resultTable);
-            } while (await reader.NextResultAsync(queryCancellation.Token));
+            var dataSet = new DataSet();
+            dataSet.Load(reader, LoadOption.Upsert, Array.Empty<string>());
+            var tables = dataSet.Tables.Cast<DataTable>().Where(table => table.Columns.Count > 0).ToList();
             if (tables.Count == 0) { MessagesBox.Text = "Sorgu sonuç döndürmedi."; StatusText.Text = "Hazır"; return; }
 
             var table = tables[0];
@@ -650,7 +607,7 @@ public partial class MainWindow
             RowBackground = Brushes.White,
             AlternatingRowBackground = new SolidColorBrush(Color.FromRgb(251, 252, 254)),
             BorderThickness = new Thickness(0),
-            ColumnHeaderHeight = 62,
+            ColumnHeaderHeight = 36,
             RowHeight = 30,
             FontFamily = new FontFamily("Segoe UI"),
             FontSize = 12,
@@ -687,24 +644,8 @@ public partial class MainWindow
     private void ResultsGrid_AutoGeneratingColumn(object? sender, DataGridAutoGeneratingColumnEventArgs e)
     {
         var columnName = e.PropertyName;
-        var header = new FrameworkElementFactory(typeof(StackPanel));
-        header.SetValue(StackPanel.OrientationProperty, Orientation.Vertical);
-        header.SetValue(StackPanel.MarginProperty, new Thickness(0, 2, 0, 2));
-
-        var title = new FrameworkElementFactory(typeof(TextBlock));
-        title.SetValue(TextBlock.TextProperty, columnName);
-        title.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
-        header.AppendChild(title);
-
-        var filter = new FrameworkElementFactory(typeof(TextBox));
-        filter.SetValue(TextBox.TagProperty, columnName);
-        filter.SetValue(TextBox.MarginProperty, new Thickness(0, 4, 0, 0));
-        filter.SetValue(TextBox.PaddingProperty, new Thickness(5, 2, 5, 2));
-        filter.SetValue(TextBox.ToolTipProperty, $"{columnName} içinde filtrele");
-        filter.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler(ResultColumnFilter_TextChanged));
-        header.AppendChild(filter);
-
-        e.Column.HeaderTemplate = new DataTemplate { VisualTree = header };
+        var title = new TextBlock { Text = columnName, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 0, 2, 0) };
+        e.Column.Header = title;
     }
 
     private void ResultColumnFilter_TextChanged(object sender, TextChangedEventArgs e)
@@ -769,7 +710,7 @@ public partial class MainWindow
             if (filter.Tag is string) filter.Clear();
     }
 
-    private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; serverConnectionString = null; DatabaseSelector.Items.Clear(); DatabaseSelector.IsEnabled = false; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
+    private void Disconnect_Click(object sender, RoutedEventArgs e) { queryCancellation?.Cancel(); connection?.Dispose(); connection = null; SchemaTree.Items.Clear(); ConnectionLabel.Text = "Bağlantı yok"; TopConnectionText.Text = "  Bağlantı yok"; StatusText.Text = "Bağlı değil"; }
     private async void RefreshSchema_Click(object sender, RoutedEventArgs e) { try { await LoadSchemaAsync(); StatusText.Text = "Şema yenilendi"; } catch (Exception ex) { ShowError("Şema yüklenemedi", ex); } }
     private void NewQuery_Click(object sender, RoutedEventArgs e)
     {
