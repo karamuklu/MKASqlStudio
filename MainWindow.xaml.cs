@@ -468,7 +468,7 @@ public partial class MainWindow
         var editorText = GetEditorText();
         var caretIndex = GetCaretOffset();
         var beforeCaret = editorText[..Math.Min(caretIndex, editorText.Length)];
-        var qualifiedMatch = Regex.Match(beforeCaret, @"(?<qualifier>[A-Za-z_]\w*)\.(?<token>[A-Za-z_]\w*)$", RegexOptions.IgnoreCase);
+        var qualifiedMatch = Regex.Match(beforeCaret, @"(?<qualifier>[A-Za-z_]\w*)\.(?<token>[A-Za-z_]\w*)?$", RegexOptions.IgnoreCase);
         var qualifier = qualifiedMatch.Success ? qualifiedMatch.Groups["qualifier"].Value : "";
         var start = beforeCaret.Length - 1;
         while (start >= 0 && (char.IsLetterOrDigit(beforeCaret[start]) || beforeCaret[start] is '_' or '#' or '@')) start--;
@@ -477,10 +477,12 @@ public partial class MainWindow
 
         var aliases = GetTableAliases(beforeCaret);
         var qualifiedTable = aliases.TryGetValue(qualifier, out var aliasTable) ? aliasTable : "";
+        var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+(?:[A-Za-z_]\w*\.)?[A-Za-z_]*$", RegexOptions.IgnoreCase);
         var candidateSource = !string.IsNullOrWhiteSpace(qualifiedTable) && tableColumns.TryGetValue(qualifiedTable, out var columns)
             ? columns.Concat(["*"])
-            : sqlKeywords.Concat(completionSymbols).Concat(tableColumns.Values.SelectMany(value => value));
-        var tableContext = Regex.IsMatch(beforeCaret, @"\b(FROM|JOIN)\s+(?:[A-Za-z_]\w*\.)?[A-Za-z_]*$", RegexOptions.IgnoreCase);
+            : tableContext
+                ? sqlKeywords.Concat(tableNames).Concat(completionSymbols.Where(value => !tableNames.Contains(value)))
+                : sqlKeywords.Concat(tableNames);
         var candidates = candidateSource
             .Where(value => force || value.StartsWith(token, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
