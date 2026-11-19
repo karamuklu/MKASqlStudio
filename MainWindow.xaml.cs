@@ -679,11 +679,14 @@ public partial class MainWindow
             await File.WriteAllBytesAsync(zipPath, await client.GetByteArrayAsync(downloadUrl));
             ZipFile.ExtractToDirectory(zipPath, extractPath);
             var installPath = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-            var scriptPath = Path.Combine(tempRoot, "apply-update.cmd");
-            var script = $"@echo off\r\ntimeout /t 3 /nobreak >nul\r\nrobocopy \"{extractPath}\" \"{installPath}\" /E /IS /IT >nul\r\nstart \"\" \"{Path.Combine(installPath, "WindowsMssqlStudio.exe")}\"\r\n";
+            var scriptPath = Path.Combine(tempRoot, "apply-update.ps1");
+            var currentPid = Environment.ProcessId;
+            var escapedExtract = extractPath.Replace("'", "''");
+            var escapedInstall = installPath.Replace("'", "''");
+            var script = $"$ErrorActionPreference = 'Stop'\n$source = '{escapedExtract}'\n$target = '{escapedInstall}'\n$currentPid = {currentPid}\nfor ($i = 0; $i -lt 30; $i++) {{ if (-not (Get-Process -Id $currentPid -ErrorAction SilentlyContinue)) {{ break }} Start-Sleep -Milliseconds 500 }}\nNew-Item -ItemType Directory -Force -Path $target | Out-Null\nCopy-Item -Path (Join-Path $source '*') -Destination $target -Recurse -Force\nStart-Process -FilePath (Join-Path $target 'WindowsMssqlStudio.exe') -WorkingDirectory $target\n";
             await File.WriteAllTextAsync(scriptPath, script);
             MessageBox.Show(this, $"v{remoteVersion?.ToString(3) ?? tag} güncellemesi indirildi. Uygulama kapanıp yeniden başlatılacak.", "Güncelleme");
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { UseShellExecute = false, CreateNoWindow = true });
+            Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"") { UseShellExecute = false, CreateNoWindow = true });
             Close();
         }
         catch (Exception ex) { ShowError("Güncelleme kontrolü başarısız", ex); }
