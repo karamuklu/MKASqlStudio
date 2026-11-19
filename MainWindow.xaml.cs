@@ -73,7 +73,7 @@ public partial class MainWindow
               <RuleSet ignoreCase="true">
                 <Span color="Comment" begin="--" end="$" />
                 <Span color="Comment" multiline="true" begin="/\\*" end="\\*/" />
-                <Span color="String" begin="'" end="'" escapeCharacter="'" />
+                <Span color="String" begin="'" end="'" />
                 <Rule color="Variable">\\@[A-Za-z_][A-Za-z0-9_]*</Rule>
                 <Rule color="Number">\\b[0-9]+(\\.[0-9]+)?\\b</Rule>
                 <Keywords color="Keyword">
