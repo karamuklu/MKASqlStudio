@@ -35,6 +35,7 @@ public partial class MainWindow
     private readonly Dictionary<string, List<string>> tableColumns = new(StringComparer.OrdinalIgnoreCase);
     private DataView? resultView;
     private readonly Dictionary<string, string> resultFilters = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<QueryHistoryEntry> queryHistory = [];
     private readonly string[] sqlKeywords = ["SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "GROUP BY", "ORDER BY", "HAVING", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE", "ALTER", "DROP", "EXEC", "DECLARE", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "TOP", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "CASE", "WHEN", "THEN", "ELSE", "END", "BEGIN", "COMMIT", "ROLLBACK", "WITH"];
     private sealed record CompletionItem(string Display, string InsertText);
     private sealed record ExplorerNode(string Kind, string Schema = "", string Name = "");
@@ -57,6 +58,9 @@ public partial class MainWindow
         ResultsGrid.EnableColumnVirtualization = true;
         ResultsGrid.SelectionUnit = DataGridSelectionUnit.FullRow;
         ResultsGrid.ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader;
+        SqlEditor.TextArea.Caret.PositionChanged += (_, _) => UpdateCursorStatus();
+        Closing += MainWindow_Closing;
+        queryHistory.AddRange(WorkspaceStores.LoadHistory());
         Loaded += MainWindow_Loaded;
     }
 
@@ -90,11 +94,55 @@ public partial class MainWindow
         Loaded -= MainWindow_Loaded;
         Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
         {
+            RestoreSession();
+            SqlEditor.Focus();
+        });
+    }
+
+    private void RestoreSession()
+    {
+        var documents = WorkspaceStores.LoadSession();
+        if (documents.Count == 0)
+        {
             SetEditorText("SELECT TOP (100) name, type_desc\nFROM sys.objects\nORDER BY name;");
             activeQueryTab = QueryTabs.SelectedItem as TabItem;
             if (activeQueryTab is not null) { activeQueryTab.Tag = GetEditorText(); SetTabHeader(activeQueryTab, "SQLQuery1.sql"); }
-            SqlEditor.Focus();
-        });
+            UpdateCursorStatus();
+            return;
+        }
+
+        QueryTabs.Items.Clear();
+        queryNumber = 0;
+        foreach (var document in documents)
+        {
+            queryNumber++;
+            var tab = new TabItem { Tag = document.Text };
+            SetTabHeader(tab, string.IsNullOrWhiteSpace(document.Name) ? $"SQLQuery{queryNumber}.sql" : document.Name);
+            QueryTabs.Items.Add(tab);
+        }
+        QueryTabs.SelectedIndex = 0;
+        activeQueryTab = QueryTabs.SelectedItem as TabItem;
+        SetEditorText(activeQueryTab?.Tag as string ?? "");
+        UpdateCursorStatus();
+    }
+
+    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        SaveActiveQuery();
+        WorkspaceStores.SaveSession(QueryTabs.Items.OfType<TabItem>().Select((tab, index) => new QueryDocumentState
+        {
+            Name = GetTabName(tab, index),
+            Text = tab.Tag as string ?? ""
+        }));
+    }
+
+    private static string GetTabName(TabItem tab, int index) => $"SQLQuery{index + 1}.sql";
+    private void SaveSession_Click(object sender, RoutedEventArgs e) { MainWindow_Closing(this, new System.ComponentModel.CancelEventArgs()); StatusText.Text = "Oturum kaydedildi"; }
+    private void UpdateCursorStatus() => CursorText.Text = $"Satır {SqlEditor.TextArea.Caret.Line}, Sütun {SqlEditor.TextArea.Caret.Column}";
+    private void ShowHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var recent = queryHistory.Take(12).Select(item => $"{item.StartedAt.LocalDateTime:dd.MM.yyyy HH:mm} · {(item.Succeeded ? "✓" : "✕")} · {item.DurationMs} ms · {item.Database}\n{item.Sql.Replace("\r", "").Replace("\n", " ").Trim()}");
+        MessageBox.Show(this, recent.Any() ? string.Join("\n\n", recent) : "Henüz sorgu geçmişi yok.", "Sorgu geçmişi");
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
@@ -555,12 +603,24 @@ public partial class MainWindow
         try
         {
             StatusText.Text = "Çalışıyor...";
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = 60 };
-            await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
-            var dataSet = new DataSet();
-            dataSet.Load(reader, LoadOption.Upsert, Enumerable.Range(1, 64).Select(index => $"Result{index}").ToArray());
-            var tables = dataSet.Tables.Cast<DataTable>().Where(table => table.Columns.Count > 0).ToList();
-            if (tables.Count == 0) { MessagesBox.Text = "Sorgu sonuç döndürmedi."; StatusText.Text = "Hazır"; return; }
+            var tables = new List<DataTable>();
+            var affectedRows = 0;
+            var batches = Regex.Split(sql, @"(?im)^\s*GO(?:\s+\d+)?\s*(?:--.*)?$")
+                .Where(batch => !string.IsNullOrWhiteSpace(batch)).ToList();
+            foreach (var batch in batches)
+            {
+                await using var command = new SqlCommand(batch.Trim(), connection) { CommandTimeout = 60 };
+                await using var reader = await command.ExecuteReaderAsync(queryCancellation.Token);
+                var dataSet = new DataSet();
+                dataSet.Load(reader, LoadOption.Upsert, Enumerable.Range(1, 64).Select(index => $"Result{index}").ToArray());
+                tables.AddRange(dataSet.Tables.Cast<DataTable>().Where(table => table.Columns.Count > 0));
+                if (reader.RecordsAffected > 0) affectedRows += reader.RecordsAffected;
+            }
+
+            var duration = stopwatch.ElapsedMilliseconds;
+            queryHistory.Insert(0, new QueryHistoryEntry { StartedAt = DateTimeOffset.Now, Sql = sql, Server = connection.DataSource, Database = connection.Database, DurationMs = duration, ResultSets = tables.Count, Rows = tables.Sum(table => table.Rows.Count), AffectedRows = affectedRows, Succeeded = true });
+            WorkspaceStores.AddHistory(queryHistory[0]);
+            if (tables.Count == 0) { MessagesBox.Text = affectedRows > 0 ? $"Sorgu tamamlandı. Etkilenen satır: {affectedRows:N0}" : "Sorgu sonuç döndürmedi."; StatusText.Text = "Hazır"; TimingText.Text = $"{affectedRows:N0} etkilenen satır · {duration:N0} ms"; return; }
 
             var table = tables[0];
             resultView = table.DefaultView;
@@ -578,12 +638,12 @@ public partial class MainWindow
             ResultSummaryText.Text = $"  {tables.Count} sonuç kümesi · {table.Rows.Count:N0} satır · Başlıklara tıklayarak toplam al";
             UpdateResultTotals();
             stopwatch.Stop();
-            TimingText.Text = $"{table.Rows.Count:N0} satır · {stopwatch.ElapsedMilliseconds:N0} ms";
+            TimingText.Text = $"{table.Rows.Count:N0} satır · {affectedRows:N0} etkilenen · {duration:N0} ms";
             MessagesBox.Text = "Sorgu başarıyla tamamlandı.";
             StatusText.Text = "Hazır";
         }
         catch (OperationCanceledException) { StatusText.Text = "İptal edildi"; MessagesBox.Text = "Sorgu kullanıcı tarafından durduruldu."; }
-        catch (Exception ex) { StatusText.Text = "Hata"; ShowError("Sorgu çalıştırılamadı", ex); }
+        catch (Exception ex) { queryHistory.Insert(0, new QueryHistoryEntry { StartedAt = DateTimeOffset.Now, Sql = sql, Server = connection?.DataSource ?? "", Database = connection?.Database ?? "", DurationMs = stopwatch.ElapsedMilliseconds, Succeeded = false, Error = ex.Message }); if (queryHistory[0] is { } failed) WorkspaceStores.AddHistory(failed); StatusText.Text = "Hata"; ShowError("Sorgu çalıştırılamadı", ex); }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => queryCancellation?.Cancel();
